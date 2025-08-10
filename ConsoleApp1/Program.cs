@@ -190,11 +190,11 @@ namespace ConsoleApp1
             try
             {
                 // Only stop if there's actually something running AND we want to stop it
+                
                 if (stopCurrent && waveIn != null && IsMicrophoneEnabled)
                 {
-                    StopMicrophone();  // This sends MIC_STATUS:false
+                    StopMicrophone(sendStatus: false); // stop mic but keep button state
                 }
-
                 var device = deviceEnumerator.GetDevice(microphoneId);
                 if (device == null || device.State != DeviceState.Active)
                     return false;
@@ -264,7 +264,7 @@ namespace ConsoleApp1
                 
             }
         }
-        public void StopMicrophone()
+        public void StopMicrophone(bool sendStatus = true)
         {
             try
             {
@@ -277,8 +277,11 @@ namespace ConsoleApp1
                 smoothedLevel = 0f;
                 peakLevel = 0f;
 
-                // Send status to prevent ActionScript null reference  
-                actionScriptBridge.SendMicrophoneStatus(false);
+                // Only send status update if requested
+                if (sendStatus)
+                {
+                    actionScriptBridge.SendMicrophoneStatus(false);
+                }
             }
             catch (Exception ex)
             {
@@ -290,7 +293,12 @@ namespace ConsoleApp1
         private void OnAudioDataAvailable(object sender, WaveInEventArgs e)
         {
             Console.WriteLine($"DEBUG_AUDIO_CALLBACK: BytesRecorded={e.BytesRecorded}, counter={audioUpdateCounter}");
-    
+            if (!IsMicrophoneEnabled || waveIn == null)
+            {
+                Console.WriteLine("DEBUG_AUDIO_CALLBACK: Microphone disabled, ignoring callback");
+                return;
+            }
+
             if (e.BytesRecorded < 100) return;
 
             audioUpdateCounter++;
@@ -646,14 +654,18 @@ namespace ConsoleApp1
                             case "SELECT_MIC":
                                 if (parts.Length > 1)
                                 {
+                                    // Store the current state BEFORE selecting
+                                    bool wasRunning = chatManager.IsMicrophoneEnabled;
+        
                                     bool success = chatManager.SelectMicrophone(parts[1]);
                                     Console.WriteLine($"SELECTED_MIC:{success}");
         
-                                    // ADD THIS - Start the microphone after selecting it
-                                    if (success)
+                                    // Only restart if it was running before AND selection succeeded
+                                    if (success && wasRunning)
                                     {
                                         chatManager.StartMicrophone();
                                     }
+                                    // If it wasn't running before, don't start it
                                 }
                                 break;
                             case "GET_MICS":
