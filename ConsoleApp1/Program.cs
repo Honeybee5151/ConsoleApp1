@@ -227,17 +227,22 @@ namespace ConsoleApp1
         {
             if (selectedDevice == null)
             {
-                if (!SelectDefaultMicrophone(false))  // Now this will work
+                if (!SelectDefaultMicrophone(false))
                 {
+                    
                     return;
                 }
             }
 
             try
             {
+                int deviceNumber = GetDeviceNumber(SelectedMicrophoneId);
+               
+                
+
                 waveIn = new WaveInEvent
                 {
-                    DeviceNumber = GetDeviceNumber(SelectedMicrophoneId),
+                    DeviceNumber = deviceNumber,
                     WaveFormat = new WaveFormat(16000, 16, 1),
                     BufferMilliseconds = 1000
                 };
@@ -245,16 +250,18 @@ namespace ConsoleApp1
                 waveIn.DataAvailable += OnAudioDataAvailable;
                 waveIn.RecordingStopped += OnRecordingStopped;
 
+               
                 waveIn.StartRecording();
+                
+        
                 IsMicrophoneEnabled = true;
                 audioUpdateCounter = 0;
 
-                // Send status immediately - no delays to avoid flicker
                 actionScriptBridge.SendMicrophoneStatus(true);
             }
             catch (Exception ex)
             {
-                // Handle error
+                
             }
         }
         public void StopMicrophone()
@@ -282,21 +289,15 @@ namespace ConsoleApp1
         // ULTRA-OPTIMIZED: Absolute minimal processing
         private void OnAudioDataAvailable(object sender, WaveInEventArgs e)
         {
-            // Early exit for very small buffers
+            Console.WriteLine($"DEBUG_AUDIO_CALLBACK: BytesRecorded={e.BytesRecorded}, counter={audioUpdateCounter}");
+    
             if (e.BytesRecorded < 100) return;
 
-            // Process only every Nth callback to reduce CPU load
             audioUpdateCounter++;
-            if (audioUpdateCounter % 5 != 0) // Only process 20% of callbacks
-            {
-                // Still update smoothed level to prevent discontinuities
-                smoothedLevel = smoothedLevel * 0.95f; // Decay towards silence
-                return;
-            }
-
-            // ULTRA-FAST: Simple peak detection with larger step size
+    
+            // SIMPLIFIED: Process EVERY callback for testing
             float maxSample = 0f;
-            for (int i = 0; i < e.BytesRecorded; i += 8) // Skip even more samples (was 4, now 8)
+            for (int i = 0; i < e.BytesRecorded; i += 8)
             {
                 if (i + 1 < e.BytesRecorded)
                 {
@@ -307,41 +308,13 @@ namespace ConsoleApp1
             }
 
             float level = maxSample * MicrophoneSensitivity;
-
-            // CRITICAL: Always update smoothed level to prevent discontinuities
             smoothedLevel = smoothedLevel * 0.8f + level * 0.2f;
-            currentLevel = level;
 
-            // Early exit for silent audio - BUT after updating smoothed level
-            if (level < NoiseGate)
-            {
-                return;
-            }
-
-            // Update peak less frequently
-            if (level > peakLevel)
-                peakLevel = level;
-            else
-                peakLevel *= 0.98f;
-
-            // MUCH less frequent ActionScript updates (only every 20th processed callback)
-            if (audioUpdateCounter >= AUDIO_UPDATE_SKIP * 20) // Was just AUDIO_UPDATE_SKIP
+            // ALWAYS send audio level for testing - every 10 callbacks
+            if (audioUpdateCounter >= 1)
             {
                 actionScriptBridge.SendAudioLevel(smoothedLevel);
-                audioUpdateCounter = 0;
-            }
-
-            // CRITICAL FIX: Only queue audio if significantly above noise gate
-            if (isConnectedToServer && level > NoiseGate * 3)
-            {
-                // CRITICAL: Limit queue size MORE aggressively to prevent memory buildup
-                if (outgoingAudioData.Count < 5) // Reduced from 20 to 5
-                {
-                    // OPTIMIZATION: Reuse smaller buffer, only copy what's needed
-                    var audioCopy = new byte[Math.Min(e.BytesRecorded, 2048)]; // Reduced from 4096 to 2048
-                    Array.Copy(e.Buffer, 0, audioCopy, 0, audioCopy.Length);
-                    outgoingAudioData.Enqueue(audioCopy);
-                }
+                audioUpdateCounter = 0; // Reset counter
             }
         }
 
@@ -352,17 +325,24 @@ namespace ConsoleApp1
 
         private int GetDeviceNumber(string deviceId)
         {
+            
+    
             for (int i = 0; i < WaveInEvent.DeviceCount; i++)
             {
                 var capabilities = WaveInEvent.GetCapabilities(i);
+                
+        
                 if (selectedDevice != null &&
                     capabilities.ProductName.Contains(selectedDevice.FriendlyName.Split(' ')[0]))
+                {
+                   
                     return i;
+                }
             }
 
+            
             return 0;
         }
-
         #endregion
 
         #region OPTIMIZED Server Communication
@@ -556,18 +536,15 @@ namespace ConsoleApp1
             {
             }
         }
-
         public void SendAudioLevel(float level)
         {
             try
             {
+                Console.WriteLine($"DEBUG_SEND_AUDIO_LEVEL: Called with level {level}, counter {levelUpdateCounter}");
                 levelUpdateCounter++;
-        
-                // Send updates more frequently, but only when there's significant change
-                bool significantChange = Math.Abs(level - lastSentLevel) > 0.05f; // 5% change threshold
-                bool timeToUpdate = levelUpdateCounter >= 50; // Every 50th call instead of 1000
-        
-                if (significantChange || timeToUpdate)
+
+                // SEND EVERY TIME for testing
+                if (levelUpdateCounter >= 1) // Always send
                 {
                     Console.Out.WriteLine($"AUDIO_LEVEL:{level:F2}");
                     Console.Out.Flush();
@@ -647,43 +624,48 @@ namespace ConsoleApp1
                         string command = Console.ReadLine();
 
                         // Add debug output to see what we receive
-                        Console.WriteLine($"Received command: '{command}'");
+                        
 
                         if (string.IsNullOrEmpty(command)) continue;
 
                         var parts = command.Split(':');
-                        Console.WriteLine($"Processing: {parts[0]}"); // Debug
+                        
 
                         switch (parts[0])
                         {
                             case "START_MIC":
-                                Console.WriteLine("Starting microphone..."); // Debug
+                                
                                 chatManager.StartMicrophone();
-                                Console.WriteLine("MIC_STATUS:true"); // Send response
+                                
                                 break;
                             case "STOP_MIC":
-                                Console.WriteLine("Stopping microphone..."); // Debug
+                                
                                 chatManager.StopMicrophone();
-                                Console.WriteLine("MIC_STATUS:false"); // Send response
+                               
                                 break;
                             case "SELECT_MIC":
                                 if (parts.Length > 1)
                                 {
                                     bool success = chatManager.SelectMicrophone(parts[1]);
                                     Console.WriteLine($"SELECTED_MIC:{success}");
+        
+                                    // ADD THIS - Start the microphone after selecting it
+                                    if (success)
+                                    {
+                                        chatManager.StartMicrophone();
+                                    }
                                 }
-
                                 break;
                             case "GET_MICS":
-                                Console.WriteLine("Getting microphones..."); // Debug
+                               
                                 chatManager.RefreshMicrophones();
                                 var mics = chatManager.GetAvailableMicrophones();
-                                Console.WriteLine($"MIC_COUNT:{mics.Count}");
+                               
                                 break;
                             case "EXIT":
                             case "QUIT":
-                                Console.WriteLine("Received EXIT command, shutting down...");
-                                Program.cancellationTokenSource.Cancel();
+                               
+                                cancellationTokenSource.Cancel();
                                 Environment.Exit(0); // Force immediate exit
                                 return;
                         }
