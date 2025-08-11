@@ -292,10 +292,10 @@ namespace ConsoleApp1
         // ULTRA-OPTIMIZED: Absolute minimal processing
         private void OnAudioDataAvailable(object sender, WaveInEventArgs e)
         {
-            Console.WriteLine($"DEBUG_AUDIO_CALLBACK: BytesRecorded={e.BytesRecorded}, counter={audioUpdateCounter}");
+           // Console.WriteLine($"DEBUG_AUDIO_CALLBACK: BytesRecorded={e.BytesRecorded}, counter={audioUpdateCounter}");
             if (!IsMicrophoneEnabled || waveIn == null)
             {
-                Console.WriteLine("DEBUG_AUDIO_CALLBACK: Microphone disabled, ignoring callback");
+                //Console.WriteLine("DEBUG_AUDIO_CALLBACK: Microphone disabled, ignoring callback");
                 return;
             }
 
@@ -593,7 +593,7 @@ namespace ConsoleApp1
         {
             try
             {
-                Console.WriteLine($"DEBUG_SEND_AUDIO_LEVEL: Called with level {level}, counter {levelUpdateCounter}");
+                //Console.WriteLine($"DEBUG_SEND_AUDIO_LEVEL: Called with level {level}, counter {levelUpdateCounter}");
                 levelUpdateCounter++;
 
                 // SEND EVERY TIME for testing
