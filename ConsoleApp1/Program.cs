@@ -243,8 +243,8 @@ namespace ConsoleApp1
                 waveIn = new WaveInEvent
                 {
                     DeviceNumber = deviceNumber,
-                    WaveFormat = new WaveFormat(16000, 16, 1),
-                    BufferMilliseconds = 1000
+                    WaveFormat = new WaveFormat(8000, 16, 1), // Change from 16000 to 8000
+                    BufferMilliseconds = 100
                 };
 
                 waveIn.DataAvailable += OnAudioDataAvailable;
@@ -302,7 +302,7 @@ namespace ConsoleApp1
             if (e.BytesRecorded < 100) return;
 
             audioUpdateCounter++;
-    
+
             // SIMPLIFIED: Process EVERY callback for testing
             float maxSample = 0f;
             for (int i = 0; i < e.BytesRecorded; i += 8)
@@ -317,6 +317,15 @@ namespace ConsoleApp1
 
             float level = maxSample * MicrophoneSensitivity;
             smoothedLevel = smoothedLevel * 0.8f + level * 0.2f;
+
+            // ADD THIS: Queue audio data for server transmission
+            if (isConnectedToServer && level > NoiseGate)
+            {
+                byte[] audioData = new byte[e.BytesRecorded];
+                Array.Copy(e.Buffer, audioData, e.BytesRecorded);
+                outgoingAudioData.Enqueue(audioData);
+               //Console.WriteLine($"DEBUG: Queued audio data, queue size: {outgoingAudioData.Count}");
+            }
 
             // ALWAYS send audio level for testing - every 10 callbacks
             if (audioUpdateCounter >= 1)
@@ -359,6 +368,15 @@ namespace ConsoleApp1
         {
             try
             {
+                // Prevent duplicate connections
+                if (isConnectedToServer && serverConnection?.Connected == true)
+                {
+                    Console.WriteLine("Already connected to server");
+                    return true;
+                }
+
+                DisconnectFromServer();
+
                 serverConnection = new TcpClient();
                 await serverConnection.ConnectAsync(serverAddress, 2051);
                 serverStream = serverConnection.GetStream();
@@ -366,10 +384,21 @@ namespace ConsoleApp1
                 isConnectedToServer = true;
                 serverId = playerId;
 
-                // Send identification with VoiceID
+                // Send identification with VoiceID using length prefix
                 var identMessage = $"VOICE_CONNECT:{playerId}:{voiceId}";
-                var buffer = Encoding.UTF8.GetBytes(identMessage);
-                await serverStream.WriteAsync(buffer, 0, buffer.Length);
+                var messageBytes = Encoding.UTF8.GetBytes(identMessage);
+        
+                // Send length header first
+                var lengthBytes = new byte[4];
+                lengthBytes[0] = (byte)(messageBytes.Length & 0xFF);
+                lengthBytes[1] = (byte)((messageBytes.Length >> 8) & 0xFF);
+                lengthBytes[2] = (byte)((messageBytes.Length >> 16) & 0xFF);
+                lengthBytes[3] = (byte)((messageBytes.Length >> 24) & 0xFF);
+        
+                await serverStream.WriteAsync(lengthBytes, 0, 4);
+                await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
+
+                Console.WriteLine($"DEBUG: Sent VOICE_CONNECT, {messageBytes.Length} bytes");
 
                 _ = Task.Run(ListenForServerMessages);
 
@@ -403,26 +432,37 @@ namespace ConsoleApp1
         {
             try
             {
-                // Send only the latest audio sample to reduce bandwidth
                 var latestAudio = audioBatch[audioBatch.Count - 1];
-
+                // No compression needed - just use the audio as-is
+        
                 var chatMessage = new ChatMessage
                 {
                     PlayerId = serverId,
                     PlayerName = "LocalPlayer",
-                    AudioData = latestAudio,
+                    AudioData = latestAudio, // Use original audio
                     Volume = smoothedLevel,
                     Timestamp = DateTime.Now
                 };
 
                 var json = JsonSerializer.Serialize(chatMessage);
                 var message = $"VOICE_DATA:{json}";
-                var buffer = Encoding.UTF8.GetBytes(message);
+                var messageBytes = Encoding.UTF8.GetBytes(message);
 
-                await serverStream.WriteAsync(buffer, 0, buffer.Length, networkCancellation.Token);
+                // Send length + data
+                var lengthBytes = new byte[4];
+                lengthBytes[0] = (byte)(messageBytes.Length & 0xFF);
+                lengthBytes[1] = (byte)((messageBytes.Length >> 8) & 0xFF);
+                lengthBytes[2] = (byte)((messageBytes.Length >> 16) & 0xFF);
+                lengthBytes[3] = (byte)((messageBytes.Length >> 24) & 0xFF);
+
+                await serverStream.WriteAsync(lengthBytes, 0, 4);
+                await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
+
+                Console.WriteLine($"DEBUG: Sent {messageBytes.Length} bytes to server");
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"Error sending audio: {ex.Message}");
                 isConnectedToServer = false;
             }
         }
