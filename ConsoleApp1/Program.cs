@@ -680,6 +680,7 @@ namespace ConsoleApp1
                                 cancellationTokenSource.Cancel();
                                 Environment.Exit(0); // Force immediate exit
                                 return;
+                            
                         }
                           
                     }
