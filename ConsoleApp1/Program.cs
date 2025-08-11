@@ -355,16 +355,21 @@ namespace ConsoleApp1
 
         #region OPTIMIZED Server Communication
 
-        public async Task<bool> ConnectToServer(string serverAddress, int port, string playerId)
+        public async Task<bool> ConnectToServer(string serverAddress, int port, string playerId, string voiceId)
         {
             try
             {
                 serverConnection = new TcpClient();
-                await serverConnection.ConnectAsync(serverAddress, port);
+                await serverConnection.ConnectAsync(serverAddress, 2051);
                 serverStream = serverConnection.GetStream();
 
                 isConnectedToServer = true;
                 serverId = playerId;
+
+                // Send identification with VoiceID
+                var identMessage = $"VOICE_CONNECT:{playerId}:{voiceId}";
+                var buffer = Encoding.UTF8.GetBytes(identMessage);
+                await serverStream.WriteAsync(buffer, 0, buffer.Length);
 
                 _ = Task.Run(ListenForServerMessages);
 
@@ -645,6 +650,15 @@ namespace ConsoleApp1
                                 
                                 chatManager.StartMicrophone();
                                 
+                                break;
+                            case "CONNECT_VOICE": // UPDATE THIS CASE
+                                if (parts.Length >= 4) // Now expects: CONNECT_VOICE:serverIP:playerID:voiceID
+                                {
+                                    string serverIP = parts[1];
+                                    string playerID = parts[2];
+                                    string voiceID = parts[3];
+                                    _ = chatManager.ConnectToServer(serverIP, 0, playerID, voiceID);
+                                }
                                 break;
                             case "STOP_MIC":
                                 
