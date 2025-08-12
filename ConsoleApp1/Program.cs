@@ -189,26 +189,27 @@ namespace ConsoleApp1
         {
             try
             {
-                // Only stop if there's actually something running AND we want to stop it
-                
-                if (stopCurrent && waveIn != null && IsMicrophoneEnabled)
-                {
-                    StopMicrophone(sendStatus: false); // stop mic but keep button state
-                }
+                Console.WriteLine($"DEBUG: SelectMicrophone called with ID: {microphoneId}");
+        
+                // ADD THIS ONE LINE:
+                ForceCleanupCurrentMicrophone();
+        
+                // Rest of your existing code stays the same:
                 var device = deviceEnumerator.GetDevice(microphoneId);
                 if (device == null || device.State != DeviceState.Active)
+                {
                     return false;
+                }
 
                 selectedDevice = device;
                 SelectedMicrophoneId = microphoneId;
 
-                // Send selection to prevent ActionScript null reference
                 actionScriptBridge.SendSelectedMicrophone(microphoneId);
-
                 return true;
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"DEBUG: Error in SelectMicrophone: {ex.Message}");
                 return false;
             }
         }
@@ -292,7 +293,7 @@ namespace ConsoleApp1
         // ULTRA-OPTIMIZED: Absolute minimal processing
         private void OnAudioDataAvailable(object sender, WaveInEventArgs e)
         {
-           // Console.WriteLine($"DEBUG_AUDIO_CALLBACK: BytesRecorded={e.BytesRecorded}, counter={audioUpdateCounter}");
+           //Console.WriteLine($"DEBUG_AUDIO_CALLBACK: BytesRecorded={e.BytesRecorded}, counter={audioUpdateCounter}");
             if (!IsMicrophoneEnabled || waveIn == null)
             {
                 //Console.WriteLine("DEBUG_AUDIO_CALLBACK: Microphone disabled, ignoring callback");
@@ -334,7 +335,49 @@ namespace ConsoleApp1
                 audioUpdateCounter = 0; // Reset counter
             }
         }
+// 1. ADD this new cleanup function to your ProximityChatManager class:
 
+        private void ForceCleanupCurrentMicrophone()
+        {
+            try
+            {
+                Console.WriteLine("DEBUG: Cleaning up current microphone...");
+        
+                if (waveIn != null)
+                {
+                    // Remove event handlers first
+                    waveIn.DataAvailable -= OnAudioDataAvailable;
+                    waveIn.RecordingStopped -= OnRecordingStopped;
+            
+                    // Stop and dispose
+                    try { waveIn.StopRecording(); } catch { }
+                    try { waveIn.Dispose(); } catch { }
+                    waveIn = null;
+                }
+        
+                // Clear device reference
+                if (selectedDevice != null)
+                {
+                    try { selectedDevice.Dispose(); } catch { }
+                    selectedDevice = null;
+                }
+        
+                // Reset state
+                IsMicrophoneEnabled = false;
+                currentLevel = 0f;
+                smoothedLevel = 0f;
+                peakLevel = 0f;
+        
+                // Clear audio queue
+                while (outgoingAudioData.TryDequeue(out _)) { }
+        
+                Console.WriteLine("DEBUG: Microphone cleanup completed");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"DEBUG: Error in cleanup: {ex.Message}");
+            }
+        }
         private void OnRecordingStopped(object sender, StoppedEventArgs e)
         {
             // REMOVED: Console output
