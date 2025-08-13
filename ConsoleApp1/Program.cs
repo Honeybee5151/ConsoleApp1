@@ -358,7 +358,7 @@ namespace ConsoleApp1
             }
         }
 
-        private byte[] ConvertToMP3(byte[] pcmData)
+        private byte[] ConvertToMP3(byte[] pcmData)//d
         {
             using (var memStream = new MemoryStream())
             using (var mp3Writer = new LameMP3FileWriter(memStream,
