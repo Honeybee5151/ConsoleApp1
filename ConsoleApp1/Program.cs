@@ -11,6 +11,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Collections.Concurrent;
 using NAudio.Lame;
+using System.IO;
 
 namespace ConsoleApp1
 {
@@ -84,6 +85,7 @@ namespace ConsoleApp1
         
         public bool allowAudioTransmission = true;
 
+        public float MicrophoneGain { get; set; } = 1.5f;
         // REMOVED: Most events to reduce overhead
         public event EventHandler<string> ConnectionStatusChanged;
 
@@ -111,31 +113,33 @@ namespace ConsoleApp1
 
         #region ULTRA-OPTIMIZED: Background Network Worker
 
+        // REPLACE this in your NetworkWorker() method (around line 119):
+
         private async Task NetworkWorker()
         {
-            var messageBuffer = new List<byte[]>(10); // Batch process audio
+            var messageBuffer = new List<byte[]>(50); // Bigger buffer
 
             while (!networkCancellation.Token.IsCancellationRequested)
             {
                 try
                 {
-                    // Batch process audio data (much more efficient)
+                    // FIXED: Process ALL audio chunks, not just 5
                     messageBuffer.Clear();
-                    int count = 0;
-                    while (outgoingAudioData.TryDequeue(out var audioData) && count < 5)
+            
+                    // Process ALL queued audio instead of limiting to 5
+                    while (outgoingAudioData.TryDequeue(out var audioData))
                     {
                         messageBuffer.Add(audioData);
-                        count++;
                     }
 
-                    // Send batched audio if any
+                    // Send ALL audio if any exists
                     if (messageBuffer.Count > 0 && isConnectedToServer)
                     {
                         await SendBatchedAudioToServer(messageBuffer);
                     }
 
-                    // MUCH longer delay - only process network every 50ms
-                    await Task.Delay(50, networkCancellation.Token);
+                    // FASTER processing - 10ms instead of 50ms
+                    await Task.Delay(10, networkCancellation.Token);
                 }
                 catch (OperationCanceledException)
                 {
@@ -143,7 +147,8 @@ namespace ConsoleApp1
                 }
                 catch (Exception ex)
                 {
-                    // REMOVED: Console output during normal operation
+                    Console.WriteLine($"ERROR in NetworkWorker: {ex.Message}");
+                    File.AppendAllText("error.log", $"{DateTime.Now}: NetworkWorker - {ex}\n");
                     await Task.Delay(100, networkCancellation.Token);
                 }
             }
@@ -251,9 +256,10 @@ namespace ConsoleApp1
                 waveIn = new WaveInEvent
                 {
                     DeviceNumber = deviceNumber,
-                    WaveFormat = new WaveFormat(8000, 16, 1), // Change from 16000 to 8000
-                    BufferMilliseconds = 100
+                    WaveFormat = new WaveFormat(44100, 16, 1), // 44.1kHz instead of 16kHz - MUCH better quality
+                    BufferMilliseconds = 50 // Smaller buffers = less choppy
                 };
+
 
                 waveIn.DataAvailable += OnAudioDataAvailable;
                 waveIn.RecordingStopped += OnRecordingStopped;
@@ -269,6 +275,9 @@ namespace ConsoleApp1
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"ERROR in StartMicrophone: {ex.Message}");
+                File.AppendAllText("error.log", $"{DateTime.Now}: StartMicrophone - {ex}\n");
+            
                 
             }
         }
@@ -300,58 +309,67 @@ namespace ConsoleApp1
         // ULTRA-OPTIMIZED: Absolute minimal processing
         private void OnAudioDataAvailable(object sender, WaveInEventArgs e)
         {
-           //Console.WriteLine($"DEBUG_AUDIO_CALLBACK: BytesRecorded={e.BytesRecorded}, counter={audioUpdateCounter}");
-            if (!IsMicrophoneEnabled || waveIn == null)
-            {
-                //Console.WriteLine("DEBUG_AUDIO_CALLBACK: Microphone disabled, ignoring callback");
-                return;
-            }
-
+            if (!IsMicrophoneEnabled || waveIn == null) return;
             if (e.BytesRecorded < 100) return;
 
             audioUpdateCounter++;
 
-            // SIMPLIFIED: Process EVERY callback for testing
+            // IMPROVED: Better audio processing with gain
             float maxSample = 0f;
-            for (int i = 0; i < e.BytesRecorded; i += 8)
+    
+            // Process and amplify audio
+            for (int i = 0; i < e.BytesRecorded; i += 2) // 16-bit = 2 bytes per sample
             {
                 if (i + 1 < e.BytesRecorded)
                 {
                     short sample = BitConverter.ToInt16(e.Buffer, i);
-                    float abs = Math.Abs(sample / 32768f);
+            
+                    // Apply gain amplification
+                    float amplified = sample * MicrophoneGain;
+                    amplified = Math.Max(-32767, Math.Min(32767, amplified)); // Prevent clipping
+            
+                    // Update the buffer with amplified audio
+                    var amplifiedShort = (short)amplified;
+                    var amplifiedBytes = BitConverter.GetBytes(amplifiedShort);
+                    e.Buffer[i] = amplifiedBytes[0];
+                    e.Buffer[i + 1] = amplifiedBytes[1];
+            
+                    // Track levels
+                    float abs = Math.Abs(amplified / 32768f);
                     if (abs > maxSample) maxSample = abs;
                 }
             }
 
             float level = maxSample * MicrophoneSensitivity;
-            smoothedLevel = smoothedLevel * 0.8f + level * 0.2f;
+            smoothedLevel = smoothedLevel * 0.7f + level * 0.3f; // Faster response
 
-            // ADD THIS: Queue audio data for server transmission
-            if (isConnectedToServer && level > NoiseGate && allowAudioTransmission)
+            // Lower noise gate, send more audio
+            if (isConnectedToServer && level > 0.005f && allowAudioTransmission) // Much lower threshold
             {
                 byte[] audioData = new byte[e.BytesRecorded];
                 Array.Copy(e.Buffer, audioData, e.BytesRecorded);
                 outgoingAudioData.Enqueue(audioData);
             }
 
-            // ALWAYS send audio level for testing - every 10 callbacks
             if (audioUpdateCounter >= 1)
             {
                 actionScriptBridge.SendAudioLevel(smoothedLevel);
-                audioUpdateCounter = 0; // Reset counter
+                audioUpdateCounter = 0;
             }
         }
+
         private byte[] ConvertToMP3(byte[] pcmData)
         {
             using (var memStream = new MemoryStream())
-            using (var mp3Writer = new LameMP3FileWriter(memStream, 
-                       new WaveFormat(8000, 16, 1), LAMEPreset.STANDARD))
+            using (var mp3Writer = new LameMP3FileWriter(memStream,
+                       new WaveFormat(44100, 16, 1), 128)) // 44.1kHz + 128kbps instead of 64kbps
             {
                 mp3Writer.Write(pcmData, 0, pcmData.Length);
                 mp3Writer.Flush();
                 return memStream.ToArray();
             }
         }
+
 // 1. ADD this new cleanup function to your ProximityChatManager class:
 
         private void ForceCleanupCurrentMicrophone()
@@ -467,8 +485,11 @@ namespace ConsoleApp1
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"ERROR in ConnectToServer: {ex.Message}");
+                File.AppendAllText("error.log", $"{DateTime.Now}: ConnectToServer - {ex}\n");
                 ConnectionStatusChanged?.Invoke(this, $"Connection failed: {ex.Message}");
                 return false;
+           
             }
         }
 
@@ -488,46 +509,48 @@ namespace ConsoleApp1
         }
 
         // OPTIMIZED: Batch sending to reduce network calls
+        // REPLACE your SendBatchedAudioToServer method with this:
         private async Task SendBatchedAudioToServer(List<byte[]> audioBatch)
         {
             try
             {
-                var latestAudio = audioBatch[audioBatch.Count - 1];
-                // No compression needed - just use the audio as-is
-        
-                var mp3Data = ConvertToMP3(latestAudio);  // Instead of raw PCM
-                var chatMessage = new ChatMessage
+                // FIXED: Send ALL audio chunks, not just the last one
+                foreach (var audioChunk in audioBatch)
                 {
-                    PlayerId = serverId,
-                    PlayerName = "LocalPlayer",
-                    AudioData = mp3Data,  // Send MP3
-                    Volume = smoothedLevel,
-                    Timestamp = DateTime.Now
-                };
+                    var mp3Data = ConvertToMP3(audioChunk);
+                    var chatMessage = new ChatMessage
+                    {
+                        PlayerId = serverId,
+                        PlayerName = "LocalPlayer",
+                        AudioData = mp3Data,
+                        Volume = smoothedLevel,
+                        Timestamp = DateTime.Now
+                    };
 
-                var json = JsonSerializer.Serialize(chatMessage);
-                var message = $"VOICE_DATA:{json}";
-                var messageBytes = Encoding.UTF8.GetBytes(message);
+                    var json = JsonSerializer.Serialize(chatMessage);
+                    var message = $"VOICE_DATA:{json}";
+                    var messageBytes = Encoding.UTF8.GetBytes(message);
 
-                // Send length + data
-                var lengthBytes = new byte[4];
-                lengthBytes[0] = (byte)(messageBytes.Length & 0xFF);
-                lengthBytes[1] = (byte)((messageBytes.Length >> 8) & 0xFF);
-                lengthBytes[2] = (byte)((messageBytes.Length >> 16) & 0xFF);
-                lengthBytes[3] = (byte)((messageBytes.Length >> 24) & 0xFF);
+                    // Send length + data
+                    var lengthBytes = new byte[4];
+                    lengthBytes[0] = (byte)(messageBytes.Length & 0xFF);
+                    lengthBytes[1] = (byte)((messageBytes.Length >> 8) & 0xFF);
+                    lengthBytes[2] = (byte)((messageBytes.Length >> 16) & 0xFF);
+                    lengthBytes[3] = (byte)((messageBytes.Length >> 24) & 0xFF);
 
-                await serverStream.WriteAsync(lengthBytes, 0, 4);
-                await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
+                    await serverStream.WriteAsync(lengthBytes, 0, 4);
+                    await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
+                }
 
-                Console.WriteLine($"DEBUG: Sent {messageBytes.Length} bytes to server");
+                Console.WriteLine($"DEBUG: Sent {audioBatch.Count} audio chunks to server");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error sending audio: {ex.Message}");
+                Console.WriteLine($"ERROR in SendBatchedAudioToServer: {ex.Message}");
+                File.AppendAllText("error.log", $"{DateTime.Now}: SendBatchedAudioToServer - {ex}\n");
                 isConnectedToServer = false;
             }
         }
-
         private async Task ListenForServerMessages()
         {
             byte[] buffer = new byte[8192];
