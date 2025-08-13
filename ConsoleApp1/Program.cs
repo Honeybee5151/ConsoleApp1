@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Collections.Concurrent;
+using NAudio.Lame;
 
 namespace ConsoleApp1
 {
@@ -340,6 +341,17 @@ namespace ConsoleApp1
                 audioUpdateCounter = 0; // Reset counter
             }
         }
+        private byte[] ConvertToMP3(byte[] pcmData)
+        {
+            using (var memStream = new MemoryStream())
+            using (var mp3Writer = new LameMP3FileWriter(memStream, 
+                       new WaveFormat(8000, 16, 1), LAMEPreset.STANDARD))
+            {
+                mp3Writer.Write(pcmData, 0, pcmData.Length);
+                mp3Writer.Flush();
+                return memStream.ToArray();
+            }
+        }
 // 1. ADD this new cleanup function to your ProximityChatManager class:
 
         private void ForceCleanupCurrentMicrophone()
@@ -483,11 +495,12 @@ namespace ConsoleApp1
                 var latestAudio = audioBatch[audioBatch.Count - 1];
                 // No compression needed - just use the audio as-is
         
+                var mp3Data = ConvertToMP3(latestAudio);  // Instead of raw PCM
                 var chatMessage = new ChatMessage
                 {
                     PlayerId = serverId,
                     PlayerName = "LocalPlayer",
-                    AudioData = latestAudio, // Use original audio
+                    AudioData = mp3Data,  // Send MP3
                     Volume = smoothedLevel,
                     Timestamp = DateTime.Now
                 };
