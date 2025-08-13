@@ -80,6 +80,8 @@ namespace ConsoleApp1
         public float NoiseGate { get; set; } = 0.02f; // Higher default to reduce processing
         
         private float lastSentLevel = 0f;
+        
+        public bool allowAudioTransmission = true;
 
         // REMOVED: Most events to reduce overhead
         public event EventHandler<string> ConnectionStatusChanged;
@@ -154,7 +156,11 @@ namespace ConsoleApp1
         {
             return availableMicrophones;
         }
-
+        public void SetAudioTransmission(bool enabled)
+        {
+            allowAudioTransmission = enabled;
+            Console.WriteLine($"DEBUG: Audio transmission {(enabled ? "enabled" : "disabled")}");
+        }
         public void RefreshMicrophones()
         {
             try
@@ -320,12 +326,11 @@ namespace ConsoleApp1
             smoothedLevel = smoothedLevel * 0.8f + level * 0.2f;
 
             // ADD THIS: Queue audio data for server transmission
-            if (isConnectedToServer && level > NoiseGate)
+            if (isConnectedToServer && level > NoiseGate && allowAudioTransmission)
             {
                 byte[] audioData = new byte[e.BytesRecorded];
                 Array.Copy(e.Buffer, audioData, e.BytesRecorded);
                 outgoingAudioData.Enqueue(audioData);
-               //Console.WriteLine($"DEBUG: Queued audio data, queue size: {outgoingAudioData.Count}");
             }
 
             // ALWAYS send audio level for testing - every 10 callbacks
@@ -734,19 +739,31 @@ namespace ConsoleApp1
                                 chatManager.StartMicrophone();
                                 
                                 break;
-                            case "CONNECT_VOICE": // UPDATE THIS CASE
-                                if (parts.Length >= 4) // Now expects: CONNECT_VOICE:serverIP:playerID:voiceID
+                            case "CONNECT_VOICE":
+                                if (parts.Length >= 4) // Expects: CONNECT_VOICE:serverIP:playerID:voiceID
                                 {
                                     string serverIP = parts[1];
                                     string playerID = parts[2];
                                     string voiceID = parts[3];
-                                    _ = chatManager.ConnectToServer(serverIP, 0, playerID, voiceID);
+                                    Console.WriteLine($"DEBUG: Received CONNECT_VOICE command - ServerIP: {serverIP}, PlayerID: {playerID}, VoiceID: {voiceID}");
+                                    _ = chatManager.ConnectToServer(serverIP, 2051, playerID, voiceID);  // ← Use port 2051!
+                                }
+                                else
+                                {
+                                    Console.WriteLine("DEBUG: Invalid CONNECT_VOICE command format");
                                 }
                                 break;
                             case "STOP_MIC":
                                 
                                 chatManager.StopMicrophone();
                                
+                                break;
+                            case "ENABLE_AUDIO_TRANSMISSION":
+                                chatManager.SetAudioTransmission(true);
+                                break;
+
+                            case "DISABLE_AUDIO_TRANSMISSION":
+                                chatManager.SetAudioTransmission(false);
                                 break;
                             case "SELECT_MIC":
                                 if (parts.Length > 1)
