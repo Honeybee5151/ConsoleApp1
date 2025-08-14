@@ -80,16 +80,18 @@ namespace ConsoleApp1
         public string SelectedMicrophoneId { get; private set; }
         public float MicrophoneSensitivity { get; set; } = 1.0f;
         public float NoiseGate { get; set; } = 0.02f; // Higher default to reduce processing
-        
+
         private float lastSentLevel = 0f;
-        
+
         public bool allowAudioTransmission = true;
 
         public float MicrophoneGain { get; set; } = 3f;
-        public float MakeupGain { get; set; } = 1.0f;           // NO boost at all
-        public float CompressorThreshold { get; set; } = 0.9f;  // Very high threshold  
-        public float CompressorRatio { get; set; } = 1.5f;      // Very gentle compression
-        public float LimiterThreshold { get; set; } = 0.8f;    
+        public float MakeupGain { get; set; } = 1.0f; // NO boost at all
+        public float CompressorThreshold { get; set; } = 0.9f; // Very high threshold  
+        public float CompressorRatio { get; set; } = 1.5f; // Very gentle compression
+
+        public float LimiterThreshold { get; set; } = 0.8f;
+
         // REMOVED: Most events to reduce overhead
         public event EventHandler<string> ConnectionStatusChanged;
 
@@ -129,7 +131,7 @@ namespace ConsoleApp1
                 {
                     // FIXED: Process ALL audio chunks, not just 5
                     messageBuffer.Clear();
-            
+
                     // Process ALL queued audio instead of limiting to 5
                     while (outgoingAudioData.TryDequeue(out var audioData))
                     {
@@ -139,9 +141,9 @@ namespace ConsoleApp1
                     // Send ALL audio if any exists
                     if (messageBuffer.Count > 0 && isConnectedToServer)
                     {
+                        Console.Error.WriteLine($"DEBUG: NetworkWorker sending {messageBuffer.Count} audio chunks");
                         await SendBatchedAudioToServer(messageBuffer);
                     }
-
                     // FASTER processing - 10ms instead of 50ms
                     await Task.Delay(10, networkCancellation.Token);
                 }
@@ -166,11 +168,13 @@ namespace ConsoleApp1
         {
             return availableMicrophones;
         }
+
         public void SetAudioTransmission(bool enabled)
         {
             allowAudioTransmission = enabled;
             Console.WriteLine($"DEBUG: Audio transmission {(enabled ? "enabled" : "disabled")}");
         }
+
         public void RefreshMicrophones()
         {
             try
@@ -206,10 +210,10 @@ namespace ConsoleApp1
             try
             {
                 Console.WriteLine($"DEBUG: SelectMicrophone called with ID: {microphoneId}");
-        
+
                 // ADD THIS ONE LINE:
                 ForceCleanupCurrentMicrophone();
-        
+
                 // Rest of your existing code stays the same:
                 var device = deviceEnumerator.GetDevice(microphoneId);
                 if (device == null || device.State != DeviceState.Active)
@@ -241,12 +245,14 @@ namespace ConsoleApp1
         #region ULTRA-OPTIMIZED Audio Recording
 
         public void StartMicrophone()
+        
         {
+            Console.Error.WriteLine($"DEBUG: Starting microphone...");
             if (selectedDevice == null)
             {
                 if (!SelectDefaultMicrophone(false))
                 {
-                    
+
                     return;
                 }
             }
@@ -254,8 +260,8 @@ namespace ConsoleApp1
             try
             {
                 int deviceNumber = GetDeviceNumber(SelectedMicrophoneId);
-               
-                
+
+
 
                 waveIn = new WaveInEvent
                 {
@@ -268,10 +274,10 @@ namespace ConsoleApp1
                 waveIn.DataAvailable += OnAudioDataAvailable;
                 waveIn.RecordingStopped += OnRecordingStopped;
 
-               
+
                 waveIn.StartRecording();
-                
-        
+
+
                 IsMicrophoneEnabled = true;
                 audioUpdateCounter = 0;
 
@@ -281,10 +287,11 @@ namespace ConsoleApp1
             {
                 Console.WriteLine($"ERROR in StartMicrophone: {ex.Message}");
                 File.AppendAllText("error.log", $"{DateTime.Now}: StartMicrophone - {ex}\n");
-            
-                
+
+
             }
         }
+
         public void StopMicrophone(bool sendStatus = true)
         {
             try
@@ -309,10 +316,11 @@ namespace ConsoleApp1
                 // REMOVED: Console output
             }
         }
+
         private float ApplyCompressor(float input)
         {
             float absInput = Math.Abs(input);
-    
+
             if (absInput <= CompressorThreshold)
             {
                 // Below threshold: no compression
@@ -324,7 +332,7 @@ namespace ConsoleApp1
                 float excessLevel = absInput - CompressorThreshold;
                 float compressedExcess = excessLevel / CompressorRatio;
                 float compressedLevel = CompressorThreshold + compressedExcess;
-        
+
                 // Maintain original sign
                 return input >= 0 ? compressedLevel : -compressedLevel;
             }
@@ -340,10 +348,13 @@ namespace ConsoleApp1
             else
                 return input;
         }
+
         // ULTRA-OPTIMIZED: Absolute minimal processing
         private void OnAudioDataAvailable(object sender, WaveInEventArgs e)
         {
-            if (!IsMicrophoneEnabled || waveIn == null) return;
+            Console.Error.WriteLine($"DEBUG: Audio captured - {e.BytesRecorded} bytes");
+            // ... rest of your existing code
+        
             if (e.BytesRecorded < 100) return;
 
             audioUpdateCounter++;
@@ -356,7 +367,7 @@ namespace ConsoleApp1
                 if (i + 1 < e.BytesRecorded)
                 {
                     short sample = BitConverter.ToInt16(e.Buffer, i);
-            
+
                     // NO PROCESSING - just use the raw audio
                     float abs = Math.Abs(sample / 32768f);
                     if (abs > maxSample) maxSample = abs;
@@ -372,6 +383,14 @@ namespace ConsoleApp1
                 byte[] audioData = new byte[e.BytesRecorded];
                 Array.Copy(e.Buffer, audioData, e.BytesRecorded);
                 outgoingAudioData.Enqueue(audioData);
+    
+                // ADD THIS DEBUG:
+                Console.Error.WriteLine($"DEBUG: Queued {audioData.Length} bytes for sending (level: {level:F3})");
+            }
+            else
+            {
+                Console.Error.WriteLine(
+                    $"DEBUG: Audio NOT queued - connected: {isConnectedToServer}, level: {level:F3}, transmission: {allowAudioTransmission}");
             }
 
             if (audioUpdateCounter >= 1)
@@ -381,17 +400,7 @@ namespace ConsoleApp1
             }
         }
 
-        private byte[] ConvertToMP3(byte[] pcmData)//d
-        {
-            using (var memStream = new MemoryStream())
-            using (var mp3Writer = new LameMP3FileWriter(memStream,
-                       new WaveFormat(44100, 16, 1), 128)) // 44.1kHz + 128kbps instead of 64kbps
-            {
-                mp3Writer.Write(pcmData, 0, pcmData.Length);
-                mp3Writer.Flush();
-                return memStream.ToArray();
-            }
-        }
+
 
 // 1. ADD this new cleanup function to your ProximityChatManager class:
 
@@ -399,43 +408,67 @@ namespace ConsoleApp1
         {
             try
             {
-                Console.WriteLine("DEBUG: Cleaning up current microphone...");
-        
+                Console.Error.WriteLine("DEBUG: Cleaning up current microphone...");
+
                 if (waveIn != null)
                 {
                     // Remove event handlers first
                     waveIn.DataAvailable -= OnAudioDataAvailable;
                     waveIn.RecordingStopped -= OnRecordingStopped;
-            
+
                     // Stop and dispose
-                    try { waveIn.StopRecording(); } catch { }
-                    try { waveIn.Dispose(); } catch { }
+                    try
+                    {
+                        waveIn.StopRecording();
+                    }
+                    catch
+                    {
+                    }
+
+                    try
+                    {
+                        waveIn.Dispose();
+                    }
+                    catch
+                    {
+                    }
+
                     waveIn = null;
                 }
-        
+
                 // Clear device reference
                 if (selectedDevice != null)
                 {
-                    try { selectedDevice.Dispose(); } catch { }
+                    try
+                    {
+                        selectedDevice.Dispose();
+                    }
+                    catch
+                    {
+                    }
+
                     selectedDevice = null;
                 }
-        
+
                 // Reset state
                 IsMicrophoneEnabled = false;
                 currentLevel = 0f;
                 smoothedLevel = 0f;
                 peakLevel = 0f;
-        
+
                 // Clear audio queue
-                while (outgoingAudioData.TryDequeue(out _)) { }
-        
-                Console.WriteLine("DEBUG: Microphone cleanup completed");
+                while (outgoingAudioData.TryDequeue(out _))
+                {
+                }
+
+                Console.Error.WriteLine("DEBUG: Microphone cleanup completed");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"DEBUG: Error in cleanup: {ex.Message}");
+                Console.Error.WriteLine($"DEBUG: Error in cleanup: {ex.Message}");
             }
         }
+
         private void OnRecordingStopped(object sender, StoppedEventArgs e)
         {
             // REMOVED: Console output
@@ -443,66 +476,68 @@ namespace ConsoleApp1
 
         private int GetDeviceNumber(string deviceId)
         {
-            
-    
+
+
             for (int i = 0; i < WaveInEvent.DeviceCount; i++)
             {
                 var capabilities = WaveInEvent.GetCapabilities(i);
-                
-        
+
+
                 if (selectedDevice != null &&
                     capabilities.ProductName.Contains(selectedDevice.FriendlyName.Split(' ')[0]))
                 {
-                   
+
                     return i;
                 }
             }
 
-            
+
             return 0;
         }
+
         #endregion
 
         #region OPTIMIZED Server Communication
 
         public async Task<bool> ConnectToServer(string serverAddress, int port, string playerId, string voiceId)
         {
+            Console.Error.WriteLine($"DEBUG: Attempting to connect to {serverAddress}:{port}"); // ADD THIS
             try
             {
-                // Prevent duplicate connections
                 if (isConnectedToServer && serverConnection?.Connected == true)
                 {
-                    Console.WriteLine("Already connected to server");
+                    Console.Error.WriteLine("Already connected to server");
                     return true;
                 }
 
                 DisconnectFromServer();
 
                 serverConnection = new TcpClient();
-                await serverConnection.ConnectAsync(serverAddress, 2051);
+                Console.Error.WriteLine($"DEBUG: Created TcpClient, connecting..."); // ADD THIS
+                await serverConnection.ConnectAsync(serverAddress, port);
+                Console.Error.WriteLine($"DEBUG: Connected! Getting stream..."); // ADD THIS
                 serverStream = serverConnection.GetStream();
+
 
                 isConnectedToServer = true;
                 serverId = playerId;
 
-                // Send identification with VoiceID using length prefix
+                // SIMPLE: Just authenticate this sender
                 var identMessage = $"VOICE_CONNECT:{playerId}:{voiceId}";
                 var messageBytes = Encoding.UTF8.GetBytes(identMessage);
-        
-                // Send length header first
+
                 var lengthBytes = new byte[4];
                 lengthBytes[0] = (byte)(messageBytes.Length & 0xFF);
                 lengthBytes[1] = (byte)((messageBytes.Length >> 8) & 0xFF);
                 lengthBytes[2] = (byte)((messageBytes.Length >> 16) & 0xFF);
                 lengthBytes[3] = (byte)((messageBytes.Length >> 24) & 0xFF);
-        
+
                 await serverStream.WriteAsync(lengthBytes, 0, 4);
                 await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
 
-                Console.WriteLine($"DEBUG: Sent VOICE_CONNECT, {messageBytes.Length} bytes");
+                Console.WriteLine($"DEBUG: Sent VOICE_CONNECT for player {playerId}");
 
                 _ = Task.Run(ListenForServerMessages);
-
                 ConnectionStatusChanged?.Invoke(this, "Connected");
                 return true;
             }
@@ -512,7 +547,6 @@ namespace ConsoleApp1
                 File.AppendAllText("error.log", $"{DateTime.Now}: ConnectToServer - {ex}\n");
                 ConnectionStatusChanged?.Invoke(this, $"Connection failed: {ex.Message}");
                 return false;
-           
             }
         }
 
@@ -537,15 +571,14 @@ namespace ConsoleApp1
         {
             try
             {
-                // FIXED: Send ALL audio chunks, not just the last one
+                // Send ALL audio chunks as raw PCM (no MP3 conversion)
                 foreach (var audioChunk in audioBatch)
                 {
-                    var mp3Data = ConvertToMP3(audioChunk);
                     var chatMessage = new ChatMessage
                     {
                         PlayerId = serverId,
                         PlayerName = "LocalPlayer",
-                        AudioData = mp3Data,
+                        AudioData = audioChunk, // Send raw PCM data directly
                         Volume = smoothedLevel,
                         Timestamp = DateTime.Now
                     };
@@ -565,7 +598,7 @@ namespace ConsoleApp1
                     await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
                 }
 
-                Console.WriteLine($"DEBUG: Sent {audioBatch.Count} audio chunks to server");
+                Console.Error.WriteLine($"DEBUG: Sent {audioBatch.Count} raw PCM audio chunks to server");
             }
             catch (Exception ex)
             {
@@ -574,6 +607,7 @@ namespace ConsoleApp1
                 isConnectedToServer = false;
             }
         }
+
         private async Task ListenForServerMessages()
         {
             byte[] buffer = new byte[8192];
@@ -669,13 +703,13 @@ namespace ConsoleApp1
             try
             {
                 Console.WriteLine($"MIC_COUNT:{microphones.Count}");
-        
+
                 // Send each microphone with details
                 foreach (var mic in microphones)
                 {
                     Console.WriteLine($"MIC_DEVICE:{mic.Id}|{mic.Name}|{mic.IsDefault}");
                 }
-        
+
                 // Send default mic
                 var defaultMic = microphones.FirstOrDefault(m => m.IsDefault);
                 if (defaultMic != null)
@@ -683,7 +717,9 @@ namespace ConsoleApp1
                     Console.WriteLine($"DEFAULT_MIC:{defaultMic.Id}");
                 }
             }
-            catch { }
+            catch
+            {
+            }
         }
 
         public void SendSelectedMicrophone(string microphoneId)
@@ -696,6 +732,7 @@ namespace ConsoleApp1
             {
             }
         }
+
         public void SendAudioLevel(float level)
         {
             try
@@ -712,7 +749,9 @@ namespace ConsoleApp1
                     lastSentLevel = level;
                 }
             }
-            catch { }
+            catch
+            {
+            }
         }
 
         public void SendMicrophoneStatus(bool isEnabled)
@@ -741,8 +780,22 @@ namespace ConsoleApp1
         {
             var chatManager = new ProximityChatManager();
 
-            // REMOVED: Most event handlers to reduce overhead
-            _ = Task.Run(() => ListenForCommands(chatManager, cancellationTokenSource.Token));
+            // ADD: Create VoiceManager for receiving audio
+            var actionScriptBridge = new ActionScriptBridge();
+            var voiceManager = new VoiceManager(actionScriptBridge);
+
+            // ADD: Start voice receiver immediately
+            if (voiceManager.StartVoiceReceiver())
+            {
+                Console.WriteLine("VoiceManager started successfully on port 2051");
+            }
+            else
+            {
+                Console.WriteLine("ERROR: VoiceManager FAILED to start on port 2051");
+                return; // Exit if can't start voice receiver
+            }
+
+            _ = Task.Run(() => ListenForCommands(chatManager, voiceManager, cancellationTokenSource.Token));
 
             Console.WriteLine("Ultra-optimized proximity chat started. Type commands...");
 
@@ -756,7 +809,7 @@ namespace ConsoleApp1
             {
                 while (!cancellationTokenSource.Token.IsCancellationRequested)
                 {
-                    await Task.Delay(1000, cancellationTokenSource.Token); // Much longer delay
+                    await Task.Delay(1000, cancellationTokenSource.Token);
                 }
             }
             catch (OperationCanceledException)
@@ -766,57 +819,50 @@ namespace ConsoleApp1
             finally
             {
                 chatManager.Dispose();
+                voiceManager.Dispose(); // ADD: Dispose VoiceManager
             }
         }
 
-        private static void ListenForCommands(ProximityChatManager chatManager, CancellationToken cancellationToken)
+        private static void ListenForCommands(ProximityChatManager chatManager, VoiceManager voiceManager,
+            CancellationToken cancellationToken)
         {
             try
             {
-                // Add this line to see if we're receiving anything
                 Console.WriteLine("Listening for ActionScript commands...");
 
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     try
                     {
-                        // This reads from stdin (what ActionScript sends)
                         string command = Console.ReadLine();
-
-                        // Add debug output to see what we receive
-                        
-
                         if (string.IsNullOrEmpty(command)) continue;
 
                         var parts = command.Split(':');
-                        
 
                         switch (parts[0])
                         {
                             case "START_MIC":
-                                
                                 chatManager.StartMicrophone();
-                                
                                 break;
+
                             case "CONNECT_VOICE":
-                                if (parts.Length >= 4) // Expects: CONNECT_VOICE:serverIP:playerID:voiceID
+                                if (parts.Length >= 4)
                                 {
                                     string serverIP = parts[1];
                                     string playerID = parts[2];
                                     string voiceID = parts[3];
-                                    Console.WriteLine($"DEBUG: Received CONNECT_VOICE command - ServerIP: {serverIP}, PlayerID: {playerID}, VoiceID: {voiceID}");
-                                    _ = chatManager.ConnectToServer(serverIP, 2051, playerID, voiceID);  // ← Use port 2051!
+                                    Console.WriteLine($"DEBUG: Connecting voice for player {playerID}");
+
+                                    // Connect ProximityChatManager (for sending voice)
+                                    _ = chatManager.ConnectToServer(serverIP, 2051, playerID, voiceID);
                                 }
-                                else
-                                {
-                                    Console.WriteLine("DEBUG: Invalid CONNECT_VOICE command format");
-                                }
+
                                 break;
+
                             case "STOP_MIC":
-                                
                                 chatManager.StopMicrophone();
-                               
                                 break;
+
                             case "ENABLE_AUDIO_TRANSMISSION":
                                 chatManager.SetAudioTransmission(true);
                                 break;
@@ -824,38 +870,45 @@ namespace ConsoleApp1
                             case "DISABLE_AUDIO_TRANSMISSION":
                                 chatManager.SetAudioTransmission(false);
                                 break;
+                            case "SET_INCOMING_VOLUME":
+                                if (parts.Length > 1)
+                                {
+                                    if (float.TryParse(parts[1], out float volume))
+                                    {
+                                        voiceManager.SetIncomingVolume(volume);
+                                        Console.WriteLine($"Command received: Set incoming volume to {volume}");
+                                    }
+                                    else
+                                    {
+                                        Console.WriteLine($"Invalid volume value: {parts[1]}");
+                                    }
+                                }
+                                break;
                             case "SELECT_MIC":
                                 if (parts.Length > 1)
                                 {
-                                    // Store the current state BEFORE selecting
                                     bool wasRunning = chatManager.IsMicrophoneEnabled;
-        
                                     bool success = chatManager.SelectMicrophone(parts[1]);
                                     Console.WriteLine($"SELECTED_MIC:{success}");
-        
-                                    // Only restart if it was running before AND selection succeeded
+
                                     if (success && wasRunning)
                                     {
                                         chatManager.StartMicrophone();
                                     }
-                                    // If it wasn't running before, don't start it
                                 }
+
                                 break;
+
                             case "GET_MICS":
-                               
                                 chatManager.RefreshMicrophones();
-                                var mics = chatManager.GetAvailableMicrophones();
-                               
                                 break;
+
                             case "EXIT":
                             case "QUIT":
-                               
                                 cancellationTokenSource.Cancel();
-                                Environment.Exit(0); // Force immediate exit
+                                Environment.Exit(0);
                                 return;
-                            
                         }
-                          
                     }
                     catch (Exception ex)
                     {
