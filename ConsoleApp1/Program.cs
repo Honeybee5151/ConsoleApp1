@@ -884,6 +884,62 @@ namespace ConsoleApp1
                                     }
                                 }
                                 break;
+                            // Add these cases to your existing switch statement in ListenForCommands
+
+                            case "SET_PRIORITY_ENABLED":
+                                if (parts.Length > 1)
+                                {
+                                    if (bool.TryParse(parts[1], out bool enabled))
+                                    {
+                                        // TODO: Send to server via TCP connection
+                                        Console.WriteLine($"Priority system set to: {enabled}");
+                                    }
+                                }
+                                break;
+
+                            case "SET_PRIORITY_THRESHOLD":
+                                if (parts.Length > 1)
+                                {
+                                    if (int.TryParse(parts[1], out int threshold))
+                                    {
+                                        // TODO: Send to server via TCP connection  
+                                        Console.WriteLine($"Priority threshold set to: {threshold}");
+                                    }
+                                }
+                                break;
+
+                            case "SET_NON_PRIORITY_VOLUME":
+                                if (parts.Length > 1)
+                                {
+                                    if (float.TryParse(parts[1], out float volume))
+                                    {
+                                        // TODO: Send to server via TCP connection
+                                        Console.WriteLine($"Non-priority volume set to: {volume}");
+                                    }
+                                }
+                                break;
+
+                            case "ADD_MANUAL_PRIORITY":
+                                if (parts.Length > 1)
+                                {
+                                    if (int.TryParse(parts[1], out int accountId))
+                                    {
+                                        // TODO: Send to server via TCP connection
+                                        Console.WriteLine($"Added manual priority for account: {accountId}");
+                                    }
+                                }
+                                break;
+
+                            case "REMOVE_MANUAL_PRIORITY":
+                                if (parts.Length > 1)
+                                {
+                                    if (int.TryParse(parts[1], out int accountId))
+                                    {
+                                        // TODO: Send to server via TCP connection
+                                        Console.WriteLine($"Removed manual priority for account: {accountId}");
+                                    }
+                                }
+                                break;
                             case "SELECT_MIC":
                                 if (parts.Length > 1)
                                 {
