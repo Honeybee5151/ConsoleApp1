@@ -94,7 +94,12 @@ namespace ConsoleApp1
 
         // REMOVED: Most events to reduce overhead
         public event EventHandler<string> ConnectionStatusChanged;
-
+        private DateTime lastConnectionCheck = DateTime.Now;
+        private readonly object reconnectionLock = new object();
+        private bool isReconnecting = false;
+        private string storedServerAddress;
+        private int storedPort;
+        private string storedVoiceId;
         #endregion
 
         #region Constructor and Initialization
@@ -520,13 +525,7 @@ namespace ConsoleApp1
         #endregion
 
         #region OPTIMIZED Server Communication
-        private DateTime lastConnectionCheck = DateTime.Now;
-        
-        private readonly object reconnectionLock = new object();
-        private bool isReconnecting = false;
-        private string storedServerAddress;
-        private int storedPort;
-        private string storedVoiceId;
+       
         public async Task<bool> ConnectToServer(string serverAddress, int port, string playerId, string voiceId)
 {
     Console.Error.WriteLine($"DEBUG: Attempting to connect to {serverAddress}:{port}");
