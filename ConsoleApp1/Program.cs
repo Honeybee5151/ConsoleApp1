@@ -146,15 +146,13 @@ namespace ConsoleApp1
                     }
 
                     // Store connection details for reconnection
-                    if (!string.IsNullOrEmpty(serverId))
-                    {
-                        lastPlayerId = serverId;
+                    
                         if (!string.IsNullOrEmpty(serverId))
                         {
                             lastPlayerId = serverId;
                             lastVoiceId = storedVoiceId; // Use the stored voice ID
                         }
-                    }
+                    
 
                     messageBuffer.Clear();
 
@@ -917,6 +915,11 @@ namespace ConsoleApp1
             {
                 e.Cancel = true;
                 cancellationTokenSource.Cancel();
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(3000);
+                    Environment.Exit(0);
+                });
             };
 
             try
