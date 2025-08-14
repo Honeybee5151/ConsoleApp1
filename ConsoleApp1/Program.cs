@@ -85,7 +85,11 @@ namespace ConsoleApp1
         
         public bool allowAudioTransmission = true;
 
-        public float MicrophoneGain { get; set; } = 1.5f;
+        public float MicrophoneGain { get; set; } = 3f;
+        public float MakeupGain { get; set; } = 1.0f;           // NO boost at all
+        public float CompressorThreshold { get; set; } = 0.9f;  // Very high threshold  
+        public float CompressorRatio { get; set; } = 1.5f;      // Very gentle compression
+        public float LimiterThreshold { get; set; } = 0.8f;    
         // REMOVED: Most events to reduce overhead
         public event EventHandler<string> ConnectionStatusChanged;
 
@@ -257,7 +261,7 @@ namespace ConsoleApp1
                 {
                     DeviceNumber = deviceNumber,
                     WaveFormat = new WaveFormat(44100, 16, 1), // 44.1kHz instead of 16kHz - MUCH better quality
-                    BufferMilliseconds = 50 // Smaller buffers = less choppy
+                    BufferMilliseconds = 150
                 };
 
 
@@ -305,7 +309,37 @@ namespace ConsoleApp1
                 // REMOVED: Console output
             }
         }
+        private float ApplyCompressor(float input)
+        {
+            float absInput = Math.Abs(input);
+    
+            if (absInput <= CompressorThreshold)
+            {
+                // Below threshold: no compression
+                return input;
+            }
+            else
+            {
+                // Above threshold: apply compression
+                float excessLevel = absInput - CompressorThreshold;
+                float compressedExcess = excessLevel / CompressorRatio;
+                float compressedLevel = CompressorThreshold + compressedExcess;
+        
+                // Maintain original sign
+                return input >= 0 ? compressedLevel : -compressedLevel;
+            }
+        }
 
+        private float ApplyLimiter(float input)
+        {
+            // Hard limit - never allow audio above the limiter threshold
+            if (input > LimiterThreshold)
+                return LimiterThreshold;
+            else if (input < -LimiterThreshold)
+                return -LimiterThreshold;
+            else
+                return input;
+        }
         // ULTRA-OPTIMIZED: Absolute minimal processing
         private void OnAudioDataAvailable(object sender, WaveInEventArgs e)
         {
@@ -314,37 +348,26 @@ namespace ConsoleApp1
 
             audioUpdateCounter++;
 
-            // IMPROVED: Better audio processing with gain
+            // SIMPLE TEST: No processing at all, just track levels
             float maxSample = 0f;
-    
-            // Process and amplify audio
-            for (int i = 0; i < e.BytesRecorded; i += 2) // 16-bit = 2 bytes per sample
+
+            for (int i = 0; i < e.BytesRecorded; i += 2)
             {
                 if (i + 1 < e.BytesRecorded)
                 {
                     short sample = BitConverter.ToInt16(e.Buffer, i);
             
-                    // Apply gain amplification
-                    float amplified = sample * MicrophoneGain;
-                    amplified = Math.Max(-32767, Math.Min(32767, amplified)); // Prevent clipping
-            
-                    // Update the buffer with amplified audio
-                    var amplifiedShort = (short)amplified;
-                    var amplifiedBytes = BitConverter.GetBytes(amplifiedShort);
-                    e.Buffer[i] = amplifiedBytes[0];
-                    e.Buffer[i + 1] = amplifiedBytes[1];
-            
-                    // Track levels
-                    float abs = Math.Abs(amplified / 32768f);
+                    // NO PROCESSING - just use the raw audio
+                    float abs = Math.Abs(sample / 32768f);
                     if (abs > maxSample) maxSample = abs;
                 }
             }
 
             float level = maxSample * MicrophoneSensitivity;
-            smoothedLevel = smoothedLevel * 0.7f + level * 0.3f; // Faster response
+            smoothedLevel = smoothedLevel * 0.7f + level * 0.3f;
 
-            // Lower noise gate, send more audio
-            if (isConnectedToServer && level > 0.005f && allowAudioTransmission) // Much lower threshold
+            // Send raw, unprocessed audio
+            if (isConnectedToServer && level > 0.005f && allowAudioTransmission)
             {
                 byte[] audioData = new byte[e.BytesRecorded];
                 Array.Copy(e.Buffer, audioData, e.BytesRecorded);
