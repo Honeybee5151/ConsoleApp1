@@ -123,28 +123,52 @@ namespace ConsoleApp1
 
         private async Task NetworkWorker()
         {
-            var messageBuffer = new List<byte[]>(50); // Bigger buffer
+            var messageBuffer = new List<byte[]>(50);
+            string lastPlayerId = null;
+            string lastVoiceId = null;
 
             while (!networkCancellation.Token.IsCancellationRequested)
             {
                 try
                 {
-                    // FIXED: Process ALL audio chunks, not just 5
+                    // CHECK: Connection health every 30 seconds
+                    if (DateTime.Now - lastConnectionCheck > TimeSpan.FromSeconds(30))
+                    {
+                        if (!IsConnectionHealthy())
+                        {
+                            Console.WriteLine("DEBUG: Connection unhealthy, attempting reconnection...");
+                            if (!string.IsNullOrEmpty(serverId) && !string.IsNullOrEmpty(lastVoiceId))
+                            {
+                                await AttemptReconnection(lastPlayerId, lastVoiceId);
+                            }
+                        }
+                        lastConnectionCheck = DateTime.Now;
+                    }
+
+                    // Store connection details for reconnection
+                    if (!string.IsNullOrEmpty(serverId))
+                    {
+                        lastPlayerId = serverId;
+                        if (!string.IsNullOrEmpty(serverId))
+                        {
+                            lastPlayerId = serverId;
+                            lastVoiceId = storedVoiceId; // Use the stored voice ID
+                        }
+                    }
+
                     messageBuffer.Clear();
 
-                    // Process ALL queued audio instead of limiting to 5
                     while (outgoingAudioData.TryDequeue(out var audioData))
                     {
                         messageBuffer.Add(audioData);
                     }
 
-                    // Send ALL audio if any exists
                     if (messageBuffer.Count > 0 && isConnectedToServer)
                     {
                         Console.Error.WriteLine($"DEBUG: NetworkWorker sending {messageBuffer.Count} audio chunks");
                         await SendBatchedAudioToServer(messageBuffer);
                     }
-                    // FASTER processing - 10ms instead of 50ms
+
                     await Task.Delay(10, networkCancellation.Token);
                 }
                 catch (OperationCanceledException)
@@ -498,55 +522,116 @@ namespace ConsoleApp1
         #endregion
 
         #region OPTIMIZED Server Communication
-
+        private DateTime lastConnectionCheck = DateTime.Now;
+        
+        private readonly object reconnectionLock = new object();
+        private bool isReconnecting = false;
+        private string storedServerAddress;
+        private int storedPort;
+        private string storedVoiceId;
         public async Task<bool> ConnectToServer(string serverAddress, int port, string playerId, string voiceId)
+{
+    Console.Error.WriteLine($"DEBUG: Attempting to connect to {serverAddress}:{port}");
+    try
+    {
+        lock (reconnectionLock)
         {
-            Console.Error.WriteLine($"DEBUG: Attempting to connect to {serverAddress}:{port}"); // ADD THIS
+            if (isConnectedToServer && serverConnection?.Connected == true)
+            {
+                Console.Error.WriteLine("Already connected to server");
+                return true;
+            }
+        }
+
+        DisconnectFromServer();
+
+        serverConnection = new TcpClient();
+        // ADD: Set keep-alive to detect dead connections
+        serverConnection.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+        
+        Console.Error.WriteLine($"DEBUG: Created TcpClient, connecting...");
+        await serverConnection.ConnectAsync(serverAddress, port);
+        Console.Error.WriteLine($"DEBUG: Connected! Getting stream...");
+        serverStream = serverConnection.GetStream();
+
+        isConnectedToServer = true;
+        serverId = playerId;
+        lastConnectionCheck = DateTime.Now; // RESET connection check timer
+        storedServerAddress = serverAddress;
+        storedPort = port;
+        storedVoiceId = voiceId;
+
+        // SIMPLE: Just authenticate this sender
+        var identMessage = $"VOICE_CONNECT:{playerId}:{voiceId}";
+        var messageBytes = Encoding.UTF8.GetBytes(identMessage);
+
+        var lengthBytes = new byte[4];
+        lengthBytes[0] = (byte)(messageBytes.Length & 0xFF);
+        lengthBytes[1] = (byte)((messageBytes.Length >> 8) & 0xFF);
+        lengthBytes[2] = (byte)((messageBytes.Length >> 16) & 0xFF);
+        lengthBytes[3] = (byte)((messageBytes.Length >> 24) & 0xFF);
+
+        await serverStream.WriteAsync(lengthBytes, 0, 4);
+        await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
+
+        Console.WriteLine($"DEBUG: Sent VOICE_CONNECT for player {playerId}");
+
+        _ = Task.Run(ListenForServerMessages);
+        ConnectionStatusChanged?.Invoke(this, "Connected");
+        return true;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"ERROR in ConnectToServer: {ex.Message}");
+        File.AppendAllText("error.log", $"{DateTime.Now}: ConnectToServer - {ex}\n");
+        ConnectionStatusChanged?.Invoke(this, $"Connection failed: {ex.Message}");
+        return false;
+    }
+}
+        private bool IsConnectionHealthy()
+        {
             try
             {
-                if (isConnectedToServer && serverConnection?.Connected == true)
+                if (serverConnection == null || !serverConnection.Connected)
+                    return false;
+
+                // CHECK: Socket is actually connected (not just cached state)
+                Socket socket = serverConnection.Client;
+                return !(socket.Poll(1000, SelectMode.SelectRead) && socket.Available == 0);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async Task AttemptReconnection(string playerId, string voiceId)
+        {
+            lock (reconnectionLock)
+            {
+                if (isReconnecting) return;
+                isReconnecting = true;
+            }
+
+            try
+            {
+                Console.WriteLine("DEBUG: Attempting auto-reconnection...");
+
+                if (!string.IsNullOrEmpty(storedServerAddress))
                 {
-                    Console.Error.WriteLine("Already connected to server");
-                    return true;
+                    await ConnectToServer(storedServerAddress, storedPort, playerId, voiceId);
                 }
-
-                DisconnectFromServer();
-
-                serverConnection = new TcpClient();
-                Console.Error.WriteLine($"DEBUG: Created TcpClient, connecting..."); // ADD THIS
-                await serverConnection.ConnectAsync(serverAddress, port);
-                Console.Error.WriteLine($"DEBUG: Connected! Getting stream..."); // ADD THIS
-                serverStream = serverConnection.GetStream();
-
-
-                isConnectedToServer = true;
-                serverId = playerId;
-
-                // SIMPLE: Just authenticate this sender
-                var identMessage = $"VOICE_CONNECT:{playerId}:{voiceId}";
-                var messageBytes = Encoding.UTF8.GetBytes(identMessage);
-
-                var lengthBytes = new byte[4];
-                lengthBytes[0] = (byte)(messageBytes.Length & 0xFF);
-                lengthBytes[1] = (byte)((messageBytes.Length >> 8) & 0xFF);
-                lengthBytes[2] = (byte)((messageBytes.Length >> 16) & 0xFF);
-                lengthBytes[3] = (byte)((messageBytes.Length >> 24) & 0xFF);
-
-                await serverStream.WriteAsync(lengthBytes, 0, 4);
-                await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
-
-                Console.WriteLine($"DEBUG: Sent VOICE_CONNECT for player {playerId}");
-
-                _ = Task.Run(ListenForServerMessages);
-                ConnectionStatusChanged?.Invoke(this, "Connected");
-                return true;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"ERROR in ConnectToServer: {ex.Message}");
-                File.AppendAllText("error.log", $"{DateTime.Now}: ConnectToServer - {ex}\n");
-                ConnectionStatusChanged?.Invoke(this, $"Connection failed: {ex.Message}");
-                return false;
+                Console.WriteLine($"DEBUG: Auto-reconnection failed: {ex.Message}");
+            }
+            finally
+            {
+                lock (reconnectionLock)
+                {
+                    isReconnecting = false;
+                }
             }
         }
 
@@ -659,7 +744,36 @@ namespace ConsoleApp1
         {
             return IsMicrophoneEnabled && currentLevel > NoiseGate;
         }
+        public async Task SendPrioritySettingToServer(string settingType, string value)
+        {
+            try
+            {
+                if (!isConnectedToServer || serverStream == null)
+                {
+                    Console.WriteLine($"Cannot send priority setting - not connected to server");
+                    return;
+                }
 
+                var message = $"PRIORITY_SETTING:{settingType}:{value}";
+                var messageBytes = Encoding.UTF8.GetBytes(message);
+
+                // Send length header
+                var lengthBytes = new byte[4];
+                lengthBytes[0] = (byte)(messageBytes.Length & 0xFF);
+                lengthBytes[1] = (byte)((messageBytes.Length >> 8) & 0xFF);
+                lengthBytes[2] = (byte)((messageBytes.Length >> 16) & 0xFF);
+                lengthBytes[3] = (byte)((messageBytes.Length >> 24) & 0xFF);
+
+                await serverStream.WriteAsync(lengthBytes, 0, 4);
+                await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
+
+                Console.WriteLine($"Sent priority setting: {settingType} = {value}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error sending priority setting: {ex.Message}");
+            }
+        }
         #endregion
 
         #region IDisposable
@@ -795,7 +909,7 @@ namespace ConsoleApp1
                 return; // Exit if can't start voice receiver
             }
 
-            _ = Task.Run(() => ListenForCommands(chatManager, voiceManager, cancellationTokenSource.Token));
+            _ = Task.Run(async () => await ListenForCommands(chatManager, voiceManager, cancellationTokenSource.Token));
 
             Console.WriteLine("Ultra-optimized proximity chat started. Type commands...");
 
@@ -823,7 +937,7 @@ namespace ConsoleApp1
             }
         }
 
-        private static void ListenForCommands(ProximityChatManager chatManager, VoiceManager voiceManager,
+        private static async Task ListenForCommands(ProximityChatManager chatManager, VoiceManager voiceManager,
             CancellationToken cancellationToken)
         {
             try
@@ -891,7 +1005,7 @@ namespace ConsoleApp1
                                 {
                                     if (bool.TryParse(parts[1], out bool enabled))
                                     {
-                                        // TODO: Send to server via TCP connection
+                                        await chatManager.SendPrioritySettingToServer("ENABLED", enabled.ToString());
                                         Console.WriteLine($"Priority system set to: {enabled}");
                                     }
                                 }
@@ -902,7 +1016,7 @@ namespace ConsoleApp1
                                 {
                                     if (int.TryParse(parts[1], out int threshold))
                                     {
-                                        // TODO: Send to server via TCP connection  
+                                        await chatManager.SendPrioritySettingToServer("THRESHOLD", threshold.ToString());
                                         Console.WriteLine($"Priority threshold set to: {threshold}");
                                     }
                                 }
@@ -913,7 +1027,7 @@ namespace ConsoleApp1
                                 {
                                     if (float.TryParse(parts[1], out float volume))
                                     {
-                                        // TODO: Send to server via TCP connection
+                                        await chatManager.SendPrioritySettingToServer("NON_PRIORITY_VOLUME", volume.ToString());
                                         Console.WriteLine($"Non-priority volume set to: {volume}");
                                     }
                                 }
@@ -924,7 +1038,7 @@ namespace ConsoleApp1
                                 {
                                     if (int.TryParse(parts[1], out int accountId))
                                     {
-                                        // TODO: Send to server via TCP connection
+                                        await chatManager.SendPrioritySettingToServer("ADD_MANUAL", accountId.ToString());
                                         Console.WriteLine($"Added manual priority for account: {accountId}");
                                     }
                                 }
@@ -935,7 +1049,7 @@ namespace ConsoleApp1
                                 {
                                     if (int.TryParse(parts[1], out int accountId))
                                     {
-                                        // TODO: Send to server via TCP connection
+                                        await chatManager.SendPrioritySettingToServer("REMOVE_MANUAL", accountId.ToString());
                                         Console.WriteLine($"Removed manual priority for account: {accountId}");
                                     }
                                 }
