@@ -53,6 +53,8 @@ namespace ConsoleApp1
         private List<MicrophoneInfo> availableMicrophones;
         
         private VoiceManager voiceManager;
+        private DateTime lastAudioSent = DateTime.MinValue;
+        private const int AUDIO_SEND_INTERVAL_MS = 100;
 
         // Audio processing - REMOVED OBJECT POOLING (was causing overhead)
         private volatile float currentLevel;
@@ -128,62 +130,42 @@ namespace ConsoleApp1
 
         // REPLACE this in your NetworkWorker() method (around line 119):
 
+    
         private async Task NetworkWorker()
         {
-            var messageBuffer = new List<byte[]>(50);
-            string lastPlayerId = null;
-            string lastVoiceId = null;
-
             while (!networkCancellation.Token.IsCancellationRequested)
             {
                 try
                 {
-                    // CHECK: Connection health every 30 seconds
-                    if (DateTime.Now - lastConnectionCheck > TimeSpan.FromSeconds(30))
+                    // SEND ONLY ONE AUDIO CHUNK AT A TIME
+                    if (outgoingAudioData.TryDequeue(out var audioData) && isConnectedToServer)
                     {
-                        if (!IsConnectionHealthy())
+                        var chatMessage = new ChatMessage
                         {
-                            Console.WriteLine("DEBUG: Connection unhealthy, attempting reconnection...");
-                            if (!string.IsNullOrEmpty(serverId) && !string.IsNullOrEmpty(lastVoiceId))
-                            {
-                                await AttemptReconnection(lastPlayerId, lastVoiceId);
-                            }
-                        }
-                        lastConnectionCheck = DateTime.Now;
-                    }
+                            PlayerId = serverId,
+                            PlayerName = "LocalPlayer",
+                            AudioData = audioData,
+                            Volume = smoothedLevel,
+                            Timestamp = DateTime.Now  // UNIQUE timestamp for each chunk
+                        };
 
-                    // Store connection details for reconnection
-                    
-                        if (!string.IsNullOrEmpty(serverId))
-                        {
-                            lastPlayerId = serverId;
-                            lastVoiceId = storedVoiceId; // Use the stored voice ID
-                        }
-                    
+                        var json = JsonSerializer.Serialize(chatMessage);
+                        var message = $"VOICE_DATA:{json}";
+                        var messageBytes = Encoding.UTF8.GetBytes(message);
 
-                    messageBuffer.Clear();
-
-                    while (outgoingAudioData.TryDequeue(out var audioData))
-                    {
-                        messageBuffer.Add(audioData);
-                    }
-
-                    if (messageBuffer.Count > 0 && isConnectedToServer)
-                    {
-                        Console.Error.WriteLine($"DEBUG: NetworkWorker sending {messageBuffer.Count} audio chunks");
-                        await SendBatchedAudioToServer(messageBuffer);
+                        var lengthBytes = BitConverter.GetBytes(messageBytes.Length);
+                
+                        await serverStream.WriteAsync(lengthBytes, 0, 4);
+                        await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
+                
+                        Console.Error.WriteLine($"DEBUG: Sent single audio chunk, {audioData.Length} bytes");
                     }
 
                     await Task.Delay(10, networkCancellation.Token);
                 }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"ERROR in NetworkWorker: {ex.Message}");
-                    File.AppendAllText("error.log", $"{DateTime.Now}: NetworkWorker - {ex}\n");
                     await Task.Delay(100, networkCancellation.Token);
                 }
             }
@@ -381,23 +363,17 @@ namespace ConsoleApp1
         // ULTRA-OPTIMIZED: Absolute minimal processing
         private void OnAudioDataAvailable(object sender, WaveInEventArgs e)
         {
-            Console.Error.WriteLine($"DEBUG: Audio captured - {e.BytesRecorded} bytes");
-            // ... rest of your existing code
-        
             if (e.BytesRecorded < 100) return;
 
             audioUpdateCounter++;
 
-            // SIMPLE TEST: No processing at all, just track levels
+            // Calculate audio level (keep existing code)
             float maxSample = 0f;
-
             for (int i = 0; i < e.BytesRecorded; i += 2)
             {
                 if (i + 1 < e.BytesRecorded)
                 {
                     short sample = BitConverter.ToInt16(e.Buffer, i);
-
-                    // NO PROCESSING - just use the raw audio
                     float abs = Math.Abs(sample / 32768f);
                     if (abs > maxSample) maxSample = abs;
                 }
@@ -406,22 +382,27 @@ namespace ConsoleApp1
             float level = maxSample * MicrophoneSensitivity;
             smoothedLevel = smoothedLevel * 0.7f + level * 0.3f;
 
-            // Send raw, unprocessed audio
-            if (isConnectedToServer && level > 0.005f && allowAudioTransmission)
+            // THROTTLE AUDIO SENDING - only send every 100ms
+            var now = DateTime.Now;
+            if (isConnectedToServer && 
+                level > 0.005f && 
+                allowAudioTransmission && 
+                (now - lastAudioSent).TotalMilliseconds >= AUDIO_SEND_INTERVAL_MS)
             {
                 byte[] audioData = new byte[e.BytesRecorded];
                 Array.Copy(e.Buffer, audioData, e.BytesRecorded);
                 outgoingAudioData.Enqueue(audioData);
-    
-                // ADD THIS DEBUG:
+        
+                lastAudioSent = now; // Update last send time
+        
                 Console.Error.WriteLine($"DEBUG: Queued {audioData.Length} bytes for sending (level: {level:F3})");
             }
-            else
+            else if (level > 0.005f && allowAudioTransmission)
             {
-                Console.Error.WriteLine(
-                    $"DEBUG: Audio NOT queued - connected: {isConnectedToServer}, level: {level:F3}, transmission: {allowAudioTransmission}");
+                Console.Error.WriteLine($"DEBUG: Audio throttled - too soon since last send");
             }
 
+            // Update UI (keep existing code)
             if (audioUpdateCounter >= 1)
             {
                 actionScriptBridge.SendAudioLevel(smoothedLevel);
@@ -1042,6 +1023,14 @@ namespace ConsoleApp1
                                         Console.WriteLine($"Invalid volume value: {parts[1]}");
                                     }
                                 }
+                                break;
+                            case "AUDIO_PROBE":
+                                // Get default audio device info
+                                var defaultDevice = new MMDeviceEnumerator().GetDefaultAudioEndpoint(DataFlow.Render, Role.Communications);
+                                Console.WriteLine($"AUDIO_INFO:Device={defaultDevice.FriendlyName}");
+                                Console.WriteLine($"AUDIO_INFO:SampleRate={defaultDevice.AudioClient.MixFormat.SampleRate}");
+                                Console.WriteLine($"AUDIO_INFO:Channels={defaultDevice.AudioClient.MixFormat.Channels}");
+                                Console.WriteLine($"AUDIO_INFO:BitDepth={defaultDevice.AudioClient.MixFormat.BitsPerSample}");
                                 break;
                             // Add these cases to your existing switch statement in ListenForCommands
 

@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using System.Threading;
 using NAudio.Wave;
 using System.Text.Json;
+using NAudio.CoreAudioApi;
 
 namespace ConsoleApp1
 {
@@ -57,39 +58,80 @@ namespace ConsoleApp1
         #region Voice Receiver - TCP Version
 
         // NEW: Initialize audio components without UDP
-        public bool StartVoiceReceiver(int localPort = 2051)
-        {
-            try
-            {
-                if (IsVoiceReceiverActive)
-                {
-                    Console.WriteLine("Voice receiver already active");
-                    return true;
-                }
+       // REPLACE your StartVoiceReceiver method with this adaptive version:
 
-                VoiceReceivePort = localPort; // Keep for compatibility
-                
-                // Initialize audio output
-                waveOut = new WaveOutEvent();
-                waveProvider = new BufferedWaveProvider(new WaveFormat(44100, 16, 1));
-                waveProvider.BufferDuration = TimeSpan.FromSeconds(2); // 2 second buffer
-                waveOut.Init(waveProvider);
-                waveOut.Play();
-                
-                isProcessingVoice = true;
-                IsVoiceReceiverActive = true;
-                
-                Console.WriteLine($"Voice receiver initialized (TCP mode)");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error starting voice receiver: {ex.Message}");
-                IsVoiceReceiverActive = false;
-                return false;
-            }
+public bool StartVoiceReceiver(int localPort = 2051)
+{
+    try
+    {
+        if (IsVoiceReceiverActive)
+        {
+            Console.WriteLine("Voice receiver already active");
+            return true;
         }
 
+        VoiceReceivePort = localPort;
+        
+        // PROBE AUDIO SYSTEM FOR ADAPTIVE CONFIGURATION
+        var deviceEnumerator = new MMDeviceEnumerator();
+        var defaultDevice = deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Communications);
+        
+        string deviceName = defaultDevice.FriendlyName;
+        int detectedSampleRate = defaultDevice.AudioClient.MixFormat.SampleRate;
+        
+        Console.WriteLine($"DETECTED AUDIO: {deviceName}, {detectedSampleRate}Hz");
+        
+        // Initialize audio output with ADAPTIVE settings
+        waveOut = new WaveOutEvent();
+        
+        // ADAPTIVE SAMPLE RATE
+        WaveFormat audioFormat;
+        if (detectedSampleRate == 48000)
+        {
+            audioFormat = new WaveFormat(48000, 16, 1);
+            Console.WriteLine("Using 48kHz audio format");
+        }
+        else
+        {
+            audioFormat = new WaveFormat(44100, 16, 1);
+            Console.WriteLine("Using 44.1kHz audio format");
+        }
+        
+        waveProvider = new BufferedWaveProvider(audioFormat);
+        
+        // ADAPTIVE BUFFER SIZE based on device type
+        if (deviceName.Contains("USB") || deviceName.Contains("Headset"))
+        {
+            waveProvider.BufferDuration = TimeSpan.FromMilliseconds(500); // Smaller buffer for USB
+            Console.WriteLine("Using small buffer for USB/Headset device");
+        }
+        else if (deviceName.Contains("Realtek") || deviceName.Contains("High Definition"))
+        {
+            waveProvider.BufferDuration = TimeSpan.FromSeconds(2); // Standard buffer for onboard
+            Console.WriteLine("Using standard buffer for onboard audio");
+        }
+        else
+        {
+            waveProvider.BufferDuration = TimeSpan.FromSeconds(1); // Default fallback
+            Console.WriteLine("Using default buffer duration");
+        }
+        
+        waveOut.Init(waveProvider);
+        waveOut.Play();
+        
+        isProcessingVoice = true;
+        IsVoiceReceiverActive = true;
+        
+        Console.WriteLine($"Voice receiver initialized with adaptive settings");
+        return true;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error starting voice receiver: {ex.Message}");
+        IsVoiceReceiverActive = false;
+        return false;
+    }
+}
         // NEW: Set the TCP connection for voice
         public void SetVoiceTcpConnection(TcpClient tcpConnection)
         {
@@ -187,6 +229,7 @@ namespace ConsoleApp1
 }
 
         // UPDATED: Process incoming voice with volume and speaker info
+      
         private async Task ProcessIncomingVoice(byte[] voiceData, float serverVolume, string speakerId = null)
         {
             try
@@ -194,25 +237,28 @@ namespace ConsoleApp1
                 // Skip processing if local volume is 0 (performance optimization)
                 if (waveOut?.Volume <= 0f)
                 {
-                    // Audio is muted, don't process to save CPU
+                    Console.Error.WriteLine("🔊 SKIPPING: Audio is muted");
                     return;
                 }
 
                 // Apply server-specified volume to the local volume
                 float effectiveVolume = waveOut.Volume * serverVolume;
-                
+        
                 // Temporarily adjust volume for this audio if needed
                 float originalVolume = waveOut.Volume;
                 if (Math.Abs(serverVolume - 1.0f) > 0.01f) // If server volume is different from 1.0
                 {
                     waveOut.Volume = Math.Max(0f, Math.Min(1f, effectiveVolume));
                 }
-        
+
                 // Voice data from server is processed PCM - play it directly
                 if (waveProvider != null && voiceData.Length > 0)
                 {
+                    // ADD BUFFER DEBUG:
+                    Console.Error.WriteLine($"🔊 BUFFER: {waveProvider.BufferedBytes}/{waveProvider.BufferLength} before adding {voiceData.Length} bytes");
+            
                     waveProvider.AddSamples(voiceData, 0, voiceData.Length);
-                    Console.WriteLine($"Added {voiceData.Length} bytes to audio buffer (effective volume: {effectiveVolume:F2})");
+                    Console.Error.WriteLine($"🔊 SUCCESS: Added {voiceData.Length} bytes to audio buffer (effective volume: {effectiveVolume:F2})");
                 }
 
                 // Restore original volume after a short delay (optional)
@@ -227,7 +273,7 @@ namespace ConsoleApp1
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error processing incoming voice: {ex.Message}");
+                Console.Error.WriteLine($"🔊 ERROR: {ex.Message}");
             }
         }
 
