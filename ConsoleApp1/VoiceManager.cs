@@ -4,17 +4,29 @@ using System.Net.Sockets;
 using System.Threading.Tasks;
 using System.Threading;
 using NAudio.Wave;
+using System.Text.Json;
 
 namespace ConsoleApp1
 {
+    // Add this class to match the server's AudioMessage format
+    public class AudioMessage
+    {
+        public string Type { get; set; }
+        public string AudioData { get; set; } // Base64 encoded
+        public float Volume { get; set; }
+        public DateTime Timestamp { get; set; }
+        public string SpeakerId { get; set; }
+    }
+
     public class VoiceManager : IDisposable
     {
         #region Fields
         
-        private UdpClient voiceReceiveClient;
-        private IPEndPoint voiceReceiveEndpoint;
-        private bool isListeningForVoice = false;
-        private Task voiceListeningTask;
+        // REMOVED: UDP components - no longer needed
+        // private UdpClient voiceReceiveClient;
+        // private IPEndPoint voiceReceiveEndpoint;
+        
+        private bool isProcessingVoice = false;
         private readonly CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
         
         // Audio output components
@@ -24,7 +36,11 @@ namespace ConsoleApp1
         // Reference to existing components
         private readonly ActionScriptBridge actionScriptBridge;
         
-        public int VoiceReceivePort { get; private set; } = 2051; // CHANGED: Use 2051
+        // TCP voice connection reference (you'll need to pass this in)
+        private TcpClient voiceTcpConnection;
+        
+        // CHANGED: These properties are now for compatibility but not actively used
+        public int VoiceReceivePort { get; private set; } = 2051; 
         public bool IsVoiceReceiverActive { get; private set; } = false;
         
         #endregion
@@ -38,9 +54,10 @@ namespace ConsoleApp1
 
         #endregion
 
-        #region Voice Receiver
+        #region Voice Receiver - TCP Version
 
-        public bool StartVoiceReceiver(int localPort = 2051) // CHANGED: Default to 2051
+        // NEW: Initialize audio components without UDP
+        public bool StartVoiceReceiver(int localPort = 2051)
         {
             try
             {
@@ -50,9 +67,7 @@ namespace ConsoleApp1
                     return true;
                 }
 
-                VoiceReceivePort = localPort;
-                voiceReceiveEndpoint = new IPEndPoint(IPAddress.Any, localPort);
-                voiceReceiveClient = new UdpClient(voiceReceiveEndpoint);
+                VoiceReceivePort = localPort; // Keep for compatibility
                 
                 // Initialize audio output
                 waveOut = new WaveOutEvent();
@@ -61,19 +76,11 @@ namespace ConsoleApp1
                 waveOut.Init(waveProvider);
                 waveOut.Play();
                 
-                isListeningForVoice = true;
+                isProcessingVoice = true;
                 IsVoiceReceiverActive = true;
-                voiceListeningTask = Task.Run(ListenForIncomingVoice, cancellationTokenSource.Token);
                 
-                Console.WriteLine($"Voice receiver started on port {localPort}");
+                Console.WriteLine($"Voice receiver initialized (TCP mode)");
                 return true;
-            }
-            catch (SocketException ex) // ADDED: Better error handling for port conflicts
-            {
-                Console.WriteLine($"Voice receiver failed - port {localPort} already in use");
-                Console.WriteLine("Another instance may already be running on this computer");
-                IsVoiceReceiverActive = false;
-                return false; // Natural anti-multiboxing
             }
             catch (Exception ex)
             {
@@ -83,11 +90,18 @@ namespace ConsoleApp1
             }
         }
 
+        // NEW: Set the TCP connection for voice
+        public void SetVoiceTcpConnection(TcpClient tcpConnection)
+        {
+            voiceTcpConnection = tcpConnection;
+            Console.WriteLine("Voice TCP connection set");
+        }
+
         public void StopVoiceReceiver()
         {
             try
             {
-                isListeningForVoice = false;
+                isProcessingVoice = false;
                 IsVoiceReceiverActive = false;
                 
                 // Stop audio output
@@ -96,10 +110,8 @@ namespace ConsoleApp1
                 waveOut = null;
                 waveProvider = null;
                 
-                // Stop UDP receiver
-                voiceReceiveClient?.Close();
-                voiceReceiveClient?.Dispose();
-                voiceReceiveClient = null;
+                // Don't close the TCP connection here - it's managed elsewhere
+                voiceTcpConnection = null;
                 
                 Console.WriteLine("Voice receiver stopped");
             }
@@ -109,52 +121,122 @@ namespace ConsoleApp1
             }
         }
 
-        private async Task ListenForIncomingVoice()
-        {
-            while (isListeningForVoice && !cancellationTokenSource.Token.IsCancellationRequested)
-            {
-                try
-                {
-                    var result = await voiceReceiveClient.ReceiveAsync();
-                    await ProcessIncomingVoice(result.Buffer);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    if (isListeningForVoice)
-                    {
-                        Console.WriteLine($"Error receiving voice: {ex.Message}");
-                        await Task.Delay(100, cancellationTokenSource.Token);
-                    }
-                }
-            }
-        }
+        // NEW: Process TCP voice messages
+      public async Task ProcessVoiceTcpMessage(string jsonMessage)
+{
+    Console.Error.WriteLine($"🎵 DEBUG: ProcessVoiceTcpMessage called");
+    Console.Error.WriteLine($"🎵 DEBUG: Message length: {jsonMessage?.Length ?? 0}");
+    Console.Error.WriteLine($"🎵 DEBUG: isProcessingVoice: {isProcessingVoice}");
+    
+    if (jsonMessage != null && jsonMessage.Length > 0)
+    {
+        Console.Error.WriteLine($"🎵 DEBUG: First 100 chars: {jsonMessage.Substring(0, Math.Min(100, jsonMessage.Length))}");
+    }
+    
+    if (!isProcessingVoice)
+    {
+        Console.Error.WriteLine("❌ DEBUG: Not processing voice - system not active");
+        return;
+    }
 
-        private async Task ProcessIncomingVoice(byte[] voiceData)
+    try
+    {
+        Console.Error.WriteLine("🎵 DEBUG: About to deserialize JSON...");
+        
+        // Parse the JSON message directly (no prefix)
+        var audioMessage = JsonSerializer.Deserialize<AudioMessage>(jsonMessage);
+        
+        Console.Error.WriteLine($"🎵 DEBUG: Deserialization complete. Type: {audioMessage?.Type}");
+        
+        if (audioMessage?.Type == "VOICE_AUDIO")
+        {
+            Console.Error.WriteLine($"🎵 DEBUG: Valid VOICE_AUDIO message from {audioMessage.SpeakerId}");
+            Console.Error.WriteLine($"🎵 DEBUG: Volume: {audioMessage.Volume}, AudioData length: {audioMessage.AudioData?.Length ?? 0}");
+            
+            // Decode the Base64 audio data
+            Console.Error.WriteLine("🎵 DEBUG: About to decode Base64...");
+            byte[] audioData = Convert.FromBase64String(audioMessage.AudioData);
+            Console.Error.WriteLine($"🎵 DEBUG: Decoded {audioData.Length} bytes of audio data");
+            
+            // Process the audio with the specified volume
+            Console.Error.WriteLine("🎵 DEBUG: About to process incoming voice...");
+            await ProcessIncomingVoice(audioData, audioMessage.Volume, audioMessage.SpeakerId);
+            
+            Console.Error.WriteLine($"✅ Processed TCP voice from player {audioMessage.SpeakerId}, {audioData.Length} bytes, volume: {audioMessage.Volume:F2}");
+        }
+        else
+        {
+            Console.Error.WriteLine($"❌ DEBUG: Wrong message type: '{audioMessage?.Type}', expected 'VOICE_AUDIO'");
+        }
+    }
+    catch (JsonException jsonEx)
+    {
+        Console.Error.WriteLine($"❌ JSON Error: {jsonEx.Message}");
+        Console.Error.WriteLine($"❌ JSON Error Details: {jsonEx}");
+    }
+    catch (FormatException formatEx)
+    {
+        Console.Error.WriteLine($"❌ Base64 Format Error: {formatEx.Message}");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"❌ General Error: {ex.Message}");
+        Console.Error.WriteLine($"❌ Exception Type: {ex.GetType().Name}");
+        Console.Error.WriteLine($"❌ Stack Trace: {ex.StackTrace}");
+    }
+}
+
+        // UPDATED: Process incoming voice with volume and speaker info
+        private async Task ProcessIncomingVoice(byte[] voiceData, float serverVolume, string speakerId = null)
         {
             try
             {
-                // Skip processing if volume is 0 (performance optimization)
+                // Skip processing if local volume is 0 (performance optimization)
                 if (waveOut?.Volume <= 0f)
                 {
                     // Audio is muted, don't process to save CPU
                     return;
+                }
+
+                // Apply server-specified volume to the local volume
+                float effectiveVolume = waveOut.Volume * serverVolume;
+                
+                // Temporarily adjust volume for this audio if needed
+                float originalVolume = waveOut.Volume;
+                if (Math.Abs(serverVolume - 1.0f) > 0.01f) // If server volume is different from 1.0
+                {
+                    waveOut.Volume = Math.Max(0f, Math.Min(1f, effectiveVolume));
                 }
         
                 // Voice data from server is processed PCM - play it directly
                 if (waveProvider != null && voiceData.Length > 0)
                 {
                     waveProvider.AddSamples(voiceData, 0, voiceData.Length);
-                    Console.WriteLine($"Added {voiceData.Length} bytes to audio buffer");
+                    Console.WriteLine($"Added {voiceData.Length} bytes to audio buffer (effective volume: {effectiveVolume:F2})");
+                }
+
+                // Restore original volume after a short delay (optional)
+                if (Math.Abs(serverVolume - 1.0f) > 0.01f)
+                {
+                    _ = Task.Delay(100).ContinueWith(_ => 
+                    {
+                        if (waveOut != null)
+                            waveOut.Volume = originalVolume;
+                    });
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error processing incoming voice: {ex.Message}");
             }
+        }
+
+        // LEGACY: Keep old UDP method for backward compatibility but mark as unused
+        [Obsolete("UDP voice reception is no longer used. Voice is now handled via TCP.")]
+        private async Task ListenForIncomingVoice()
+        {
+            // This method is no longer used but kept for compatibility
+            Console.WriteLine("UDP voice listening is deprecated - using TCP voice instead");
         }
 
         #endregion
@@ -179,6 +261,7 @@ namespace ConsoleApp1
                 return $"127.0.0.1:{VoiceReceivePort}";
             }
         }
+
         public void SetIncomingVolume(float volume)
         {
             try
@@ -221,6 +304,12 @@ namespace ConsoleApp1
             }
         }
 
+        // NEW: Helper method to check if voice system is ready
+        public bool IsVoiceSystemReady()
+        {
+            return IsVoiceReceiverActive && waveOut != null && waveProvider != null;
+        }
+
         #endregion
 
         #region IDisposable
@@ -229,13 +318,6 @@ namespace ConsoleApp1
         {
             StopVoiceReceiver();
             cancellationTokenSource.Cancel();
-            
-            try
-            {
-                voiceListeningTask?.Wait(1000);
-            }
-            catch { }
-            
             cancellationTokenSource.Dispose();
         }
 

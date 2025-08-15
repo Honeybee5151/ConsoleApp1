@@ -51,6 +51,8 @@ namespace ConsoleApp1
         private MMDeviceEnumerator deviceEnumerator;
         private MMDevice selectedDevice;
         private List<MicrophoneInfo> availableMicrophones;
+        
+        private VoiceManager voiceManager;
 
         // Audio processing - REMOVED OBJECT POOLING (was causing overhead)
         private volatile float currentLevel;
@@ -690,28 +692,63 @@ namespace ConsoleApp1
             }
         }
 
-        private async Task ListenForServerMessages()
+     private async Task ListenForServerMessages()
+{
+    while (isConnectedToServer && serverConnection?.Connected == true)
+    {
+        try
         {
-            byte[] buffer = new byte[8192];
-
-            while (isConnectedToServer && serverConnection?.Connected == true)
+            // Read 4-byte length header first
+            var lengthBuffer = new byte[4];
+            int lengthBytesRead = 0;
+            
+            while (lengthBytesRead < 4)
             {
-                try
-                {
-                    int bytesRead = await serverStream.ReadAsync(buffer, 0, buffer.Length);
-                    if (bytesRead > 0)
-                    {
-                        string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                        // REMOVED: Message processing to reduce overhead
-                    }
-                }
-                catch (Exception ex)
-                {
-                    break;
-                }
+                int bytesRead = await serverStream.ReadAsync(lengthBuffer, lengthBytesRead, 4 - lengthBytesRead);
+                if (bytesRead == 0) break;
+                lengthBytesRead += bytesRead;
+            }
+            
+            if (lengthBytesRead < 4) break;
+            
+            // Parse message length
+            int messageLength = BitConverter.ToInt32(lengthBuffer, 0);
+            
+            if (messageLength > 200000 || messageLength < 0) // 200KB safety limit
+            {
+                Console.WriteLine($"Invalid message length: {messageLength}");
+                break;
+            }
+            
+            // Read the exact message length
+            var messageBuffer = new byte[messageLength];
+            int messageBytesRead = 0;
+            
+            while (messageBytesRead < messageLength)
+            {
+                int bytesRead = await serverStream.ReadAsync(messageBuffer, messageBytesRead, messageLength - messageBytesRead);
+                if (bytesRead == 0) break;
+                messageBytesRead += bytesRead;
+            }
+            
+            if (messageBytesRead < messageLength) break;
+            
+            string message = Encoding.UTF8.GetString(messageBuffer, 0, messageLength);
+            
+            // Route voice messages to VoiceManager
+            if (message.Contains("\"Type\":\"VOICE_AUDIO\""))
+            {
+                Console.WriteLine($"Routing complete TCP message ({messageLength} bytes) to VoiceManager");
+                await voiceManager.ProcessVoiceTcpMessage(message);
             }
         }
-
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error in ListenForServerMessages: {ex.Message}");
+            break;
+        }
+    }
+}
         #endregion
 
         #region Public API Methods
@@ -736,7 +773,11 @@ namespace ConsoleApp1
                 Timestamp = DateTime.Now
             };
         }
-
+        public void SetVoiceManager(VoiceManager vm)
+        {
+            voiceManager = vm;
+            Console.WriteLine("VoiceManager linked to ProximityChatManager");
+        }
         public bool IsMicrophoneActive()
         {
             return IsMicrophoneEnabled && currentLevel > NoiseGate;
@@ -894,6 +935,8 @@ namespace ConsoleApp1
             // ADD: Create VoiceManager for receiving audio
             var actionScriptBridge = new ActionScriptBridge();
             var voiceManager = new VoiceManager(actionScriptBridge);
+            
+            chatManager.SetVoiceManager(voiceManager);
 
             // ADD: Start voice receiver immediately
             if (voiceManager.StartVoiceReceiver())
