@@ -44,12 +44,6 @@
         "net8.0": {
           "targetAlias": "net8.0",
           "dependencies": {
-            "Microsoft.NET.ILLink.Tasks": {
-              "suppressParent": "All",
-              "target": "Package",
-              "version": "[8.0.17, )",
-              "autoReferenced": true
-            },
             "NAudio": {
               "target": "Package",
               "version": "[2.2.1, )"
@@ -76,10 +70,6 @@
               "version": "[8.0.17, 8.0.17]"
             },
             {
-              "name": "Microsoft.AspNetCore.App.Runtime.win-x64",
-              "version": "[8.0.17, 8.0.17]"
-            },
-            {
               "name": "Microsoft.NETCore.App.Host.win-x64",
               "version": "[8.0.17, 8.0.17]"
             },
@@ -88,15 +78,7 @@
               "version": "[8.0.17, 8.0.17]"
             },
             {
-              "name": "Microsoft.NETCore.App.Runtime.win-x64",
-              "version": "[8.0.17, 8.0.17]"
-            },
-            {
               "name": "Microsoft.WindowsDesktop.App.Ref",
-              "version": "[8.0.17, 8.0.17]"
-            },
-            {
-              "name": "Microsoft.WindowsDesktop.App.Runtime.win-x64",
               "version": "[8.0.17, 8.0.17]"
             }
           ],
