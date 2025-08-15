@@ -55,6 +55,9 @@ namespace ConsoleApp1
         private VoiceManager voiceManager;
         private DateTime lastAudioSent = DateTime.MinValue;
         private const int AUDIO_SEND_INTERVAL_MS = 100;
+        
+// 1. ADD this field to your VoiceManager class (at the top with other fields):
+        
 
         // Audio processing - REMOVED OBJECT POOLING (was causing overhead)
         private volatile float currentLevel;

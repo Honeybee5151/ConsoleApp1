@@ -6,6 +6,7 @@ using System.Threading;
 using NAudio.Wave;
 using System.Text.Json;
 using NAudio.CoreAudioApi;
+using System.IO;
 
 namespace ConsoleApp1
 {
@@ -29,7 +30,8 @@ namespace ConsoleApp1
         
         private bool isProcessingVoice = false;
         private readonly CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
-        
+        private WaveFormatConversionProvider resampleProvider;
+
         // Audio output components
         private WaveOutEvent waveOut;
         private BufferedWaveProvider waveProvider;
@@ -64,9 +66,11 @@ public bool StartVoiceReceiver(int localPort = 2051)
 {
     try
     {
+        Console.Error.WriteLine("[VOICE_INIT] Starting voice receiver...");
+        
         if (IsVoiceReceiverActive)
         {
-            Console.WriteLine("Voice receiver already active");
+            Console.Error.WriteLine("[VOICE_INIT] Voice receiver already active");
             return true;
         }
 
@@ -79,55 +83,52 @@ public bool StartVoiceReceiver(int localPort = 2051)
         string deviceName = defaultDevice.FriendlyName;
         int detectedSampleRate = defaultDevice.AudioClient.MixFormat.SampleRate;
         
-        Console.WriteLine($"DETECTED AUDIO: {deviceName}, {detectedSampleRate}Hz");
+        Console.Error.WriteLine($"[VOICE_INIT] Detected_Device: {deviceName}");
+        Console.Error.WriteLine($"[VOICE_INIT] Detected_SampleRate: {detectedSampleRate}Hz");
         
         // Initialize audio output with ADAPTIVE settings
         waveOut = new WaveOutEvent();
         
-        // ADAPTIVE SAMPLE RATE
-        WaveFormat audioFormat;
-        if (detectedSampleRate == 48000)
-        {
-            audioFormat = new WaveFormat(48000, 16, 1);
-            Console.WriteLine("Using 48kHz audio format");
-        }
-        else
-        {
-            audioFormat = new WaveFormat(44100, 16, 1);
-            Console.WriteLine("Using 44.1kHz audio format");
-        }
+        // ALWAYS use the detected sample rate for output
+        WaveFormat outputFormat = new WaveFormat(detectedSampleRate, 16, 1);
+        Console.Error.WriteLine($"[VOICE_INIT] Using output format: {outputFormat}");
         
-        waveProvider = new BufferedWaveProvider(audioFormat);
+        // Create BufferedWaveProvider with OUTPUT format (his system's native format)
+        waveProvider = new BufferedWaveProvider(outputFormat);
         
         // ADAPTIVE BUFFER SIZE based on device type
-        if (deviceName.Contains("USB") || deviceName.Contains("Headset"))
+        if (deviceName.Contains("USB") || deviceName.Contains("Headset") || deviceName.Contains("G432"))
         {
-            waveProvider.BufferDuration = TimeSpan.FromMilliseconds(500); // Smaller buffer for USB
-            Console.WriteLine("Using small buffer for USB/Headset device");
+            waveProvider.BufferDuration = TimeSpan.FromMilliseconds(500);
+            Console.Error.WriteLine("[VOICE_INIT] Using small buffer for USB/Headset");
         }
         else if (deviceName.Contains("Realtek") || deviceName.Contains("High Definition"))
         {
-            waveProvider.BufferDuration = TimeSpan.FromSeconds(2); // Standard buffer for onboard
-            Console.WriteLine("Using standard buffer for onboard audio");
+            waveProvider.BufferDuration = TimeSpan.FromSeconds(2);
+            Console.Error.WriteLine("[VOICE_INIT] Using standard buffer for onboard audio");
         }
         else
         {
-            waveProvider.BufferDuration = TimeSpan.FromSeconds(1); // Default fallback
-            Console.WriteLine("Using default buffer duration");
+            waveProvider.BufferDuration = TimeSpan.FromSeconds(1);
+            Console.Error.WriteLine("[VOICE_INIT] Using default buffer duration");
         }
         
         waveOut.Init(waveProvider);
         waveOut.Play();
         
+        Console.Error.WriteLine($"[VOICE_INIT] WaveOut_State: {waveOut.PlaybackState}");
+        Console.Error.WriteLine($"[VOICE_INIT] Output_Format: {outputFormat}");
+        Console.Error.WriteLine($"[VOICE_INIT] Buffer_Length: {waveProvider.BufferLength}");
+        
         isProcessingVoice = true;
         IsVoiceReceiverActive = true;
         
-        Console.WriteLine($"Voice receiver initialized with adaptive settings");
+        Console.Error.WriteLine("[VOICE_INIT] Voice receiver initialization complete");
         return true;
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"Error starting voice receiver: {ex.Message}");
+        Console.Error.WriteLine($"[VOICE_INIT] ERROR: {ex.Message}");
         IsVoiceReceiverActive = false;
         return false;
     }
@@ -145,21 +146,25 @@ public bool StartVoiceReceiver(int localPort = 2051)
             {
                 isProcessingVoice = false;
                 IsVoiceReceiverActive = false;
-                
+        
                 // Stop audio output
                 waveOut?.Stop();
                 waveOut?.Dispose();
                 waveOut = null;
+        
                 waveProvider = null;
-                
-                // Don't close the TCP connection here - it's managed elsewhere
+        
+                // Clean up resampler
+                resampleProvider?.Dispose();
+                resampleProvider = null;
+        
                 voiceTcpConnection = null;
-                
-                Console.WriteLine("Voice receiver stopped");
+        
+                Console.Error.WriteLine("[VOICE_CLEANUP] Voice receiver stopped");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error stopping voice receiver: {ex.Message}");
+                Console.Error.WriteLine($"[VOICE_CLEANUP] Error: {ex.Message}");
             }
         }
 
@@ -227,53 +232,103 @@ public bool StartVoiceReceiver(int localPort = 2051)
         Console.Error.WriteLine($"❌ Stack Trace: {ex.StackTrace}");
     }
 }
-
+private byte[] ResampleAudioIfNeeded(byte[] inputAudioData)
+{
+    try
+    {
+        // Input format (what we receive from server)
+        WaveFormat inputFormat = new WaveFormat(44100, 16, 1); // Server sends 44.1kHz
+        
+        // Output format (what our audio system expects)
+        WaveFormat outputFormat = waveProvider.WaveFormat;
+        
+        Console.Error.WriteLine($"🔄 RESAMPLE: Input={inputFormat} → Output={outputFormat}");
+        
+        // If formats match, no resampling needed
+        if (inputFormat.SampleRate == outputFormat.SampleRate)
+        {
+            Console.Error.WriteLine("🔄 RESAMPLE: No resampling needed - formats match");
+            return inputAudioData;
+        }
+        
+        // Create a MemoryStream from input audio
+        using (var inputStream = new MemoryStream(inputAudioData))
+        {
+            // Create WaveFileReader from the raw PCM data
+            var rawSource = new RawSourceWaveStream(inputStream, inputFormat);
+            
+            // Create resampler
+            var resampler = new WaveFormatConversionProvider(outputFormat, rawSource);
+            
+            // Read resampled data
+            var outputBuffer = new byte[inputAudioData.Length * outputFormat.SampleRate / inputFormat.SampleRate + 1000]; // Add some padding
+            int bytesRead = resampler.Read(outputBuffer, 0, outputBuffer.Length);
+            
+            // Return only the bytes that were actually read
+            byte[] result = new byte[bytesRead];
+            Array.Copy(outputBuffer, result, bytesRead);
+            
+            Console.Error.WriteLine($"🔄 RESAMPLE: Converted {inputAudioData.Length} → {result.Length} bytes");
+            
+            return result;
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"🔄 RESAMPLE_ERROR: {ex.Message}");
+        Console.Error.WriteLine("🔄 RESAMPLE: Falling back to original audio");
+        
+        // If resampling fails, return original audio (better than silence)
+        return inputAudioData;
+    }
+}
         // UPDATED: Process incoming voice with volume and speaker info
       
         private async Task ProcessIncomingVoice(byte[] voiceData, float serverVolume, string speakerId = null)
         {
             try
             {
-                // Skip processing if local volume is 0 (performance optimization)
+                Console.Error.WriteLine($"🔊 INCOMING: Processing {voiceData.Length} bytes from {speakerId}");
+        
+                // Skip processing if local volume is 0
                 if (waveOut?.Volume <= 0f)
                 {
                     Console.Error.WriteLine("🔊 SKIPPING: Audio is muted");
                     return;
                 }
 
-                // Apply server-specified volume to the local volume
-                float effectiveVolume = waveOut.Volume * serverVolume;
-        
-                // Temporarily adjust volume for this audio if needed
-                float originalVolume = waveOut.Volume;
-                if (Math.Abs(serverVolume - 1.0f) > 0.01f) // If server volume is different from 1.0
-                {
-                    waveOut.Volume = Math.Max(0f, Math.Min(1f, effectiveVolume));
-                }
-
-                // Voice data from server is processed PCM - play it directly
                 if (waveProvider != null && voiceData.Length > 0)
                 {
-                    // ADD BUFFER DEBUG:
                     Console.Error.WriteLine($"🔊 BUFFER: {waveProvider.BufferedBytes}/{waveProvider.BufferLength} before adding {voiceData.Length} bytes");
             
-                    waveProvider.AddSamples(voiceData, 0, voiceData.Length);
-                    Console.Error.WriteLine($"🔊 SUCCESS: Added {voiceData.Length} bytes to audio buffer (effective volume: {effectiveVolume:F2})");
-                }
-
-                // Restore original volume after a short delay (optional)
-                if (Math.Abs(serverVolume - 1.0f) > 0.01f)
-                {
-                    _ = Task.Delay(100).ContinueWith(_ => 
+                    // CRITICAL: Resample the audio if needed
+                    byte[] finalAudioData = ResampleAudioIfNeeded(voiceData);
+            
+                    Console.Error.WriteLine($"🔊 RESAMPLE: Input {voiceData.Length} bytes → Output {finalAudioData.Length} bytes");
+            
+                    // Check buffer space
+                    int availableSpace = waveProvider.BufferLength - waveProvider.BufferedBytes;
+                    if (availableSpace < finalAudioData.Length)
                     {
-                        if (waveOut != null)
-                            waveOut.Volume = originalVolume;
-                    });
+                        Console.Error.WriteLine("🔊 WARNING: Buffer full, clearing...");
+                        waveProvider.ClearBuffer();
+                    }
+            
+                    // Add the resampled audio
+                    waveProvider.AddSamples(finalAudioData, 0, finalAudioData.Length);
+            
+                    Console.Error.WriteLine($"🔊 SUCCESS: Added {finalAudioData.Length} bytes to audio buffer (volume: {serverVolume:F2})");
+                    Console.Error.WriteLine($"🔊 BUFFER_AFTER: {waveProvider.BufferedBytes}/{waveProvider.BufferLength}");
+                }
+                else
+                {
+                    Console.Error.WriteLine("🔊 ERROR: waveProvider is null or no audio data");
                 }
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"🔊 ERROR: {ex.Message}");
+                Console.Error.WriteLine($"🔊 STACK: {ex.StackTrace}");
             }
         }
 
