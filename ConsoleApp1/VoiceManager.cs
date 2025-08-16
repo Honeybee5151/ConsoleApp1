@@ -443,15 +443,38 @@ private byte[] ResampleAudioIfNeeded(byte[] inputAudioData)
             {
                 // Stop processing voice entirely
                 StopVoiceReceiver();
-        
+
+                // NEW: Send disconnect message to server
+                if (chatManagerRef != null && !string.IsNullOrEmpty(storedPlayerID))
+                {
+                    SendVoiceDisconnectToServer();
+                }
+
                 // Notify the chat manager to disconnect this client from voice server
                 NotifyVoiceDisconnect();
-        
+
                 Console.WriteLine("VoiceManager: Completely disconnected from voice system");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error disconnecting from voice system: {ex.Message}");
+            }
+        }
+        private void SendVoiceDisconnectToServer()
+        {
+            try
+            {
+                // Send VOICE_DISCONNECT message through the chat manager's connection
+                var disconnectMessage = $"VOICE_DISCONNECT:{storedPlayerID}";
+        
+                // You'll need to add this method to ProximityChatManager
+                _ = Task.Run(async () => await chatManagerRef.SendServerMessage(disconnectMessage));
+        
+                Console.WriteLine($"Sent VOICE_DISCONNECT for player {storedPlayerID}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error sending voice disconnect: {ex.Message}");
             }
         }
         private void ReconnectToVoiceSystem()

@@ -434,7 +434,26 @@ namespace ConsoleApp1
                 audioUpdateCounter = 0;
             }
         }
-
+        public async Task SendServerMessage(string message)
+        {
+            try
+            {
+                if (isConnectedToServer && serverStream != null)
+                {
+                    var messageBytes = Encoding.UTF8.GetBytes(message);
+                    var lengthBytes = BitConverter.GetBytes(messageBytes.Length);
+            
+                    await serverStream.WriteAsync(lengthBytes, 0, 4);
+                    await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
+            
+                    Console.WriteLine($"Sent message to server: {message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error sending server message: {ex.Message}");
+            }
+        }
 
 
 // 1. ADD this new cleanup function to your ProximityChatManager class:
@@ -820,36 +839,7 @@ public void OnConnectionLost()
         {
             return IsMicrophoneEnabled && currentLevel > NoiseGate;
         }
-        public async Task SendPrioritySettingToServer(string settingType, string value)
-        {
-            try
-            {
-                if (!isConnectedToServer || serverStream == null)
-                {
-                    Console.WriteLine($"Cannot send priority setting - not connected to server");
-                    return;
-                }
-
-                var message = $"PRIORITY_SETTING:{settingType}:{value}";
-                var messageBytes = Encoding.UTF8.GetBytes(message);
-
-                // Send length header
-                var lengthBytes = new byte[4];
-                lengthBytes[0] = (byte)(messageBytes.Length & 0xFF);
-                lengthBytes[1] = (byte)((messageBytes.Length >> 8) & 0xFF);
-                lengthBytes[2] = (byte)((messageBytes.Length >> 16) & 0xFF);
-                lengthBytes[3] = (byte)((messageBytes.Length >> 24) & 0xFF);
-
-                await serverStream.WriteAsync(lengthBytes, 0, 4);
-                await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
-
-                Console.WriteLine($"Sent priority setting: {settingType} = {value}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error sending priority setting: {ex.Message}");
-            }
-        }
+      
         #endregion
 
         #region IDisposable
@@ -1112,60 +1102,13 @@ public void OnConnectionLost()
                                 break;
                             // Add these cases to your existing switch statement in ListenForCommands
 
-                            case "SET_PRIORITY_ENABLED":
-                                if (parts.Length > 1)
-                                {
-                                    if (bool.TryParse(parts[1], out bool enabled))
-                                    {
-                                        await chatManager.SendPrioritySettingToServer("ENABLED", enabled.ToString());
-                                        Console.WriteLine($"Priority system set to: {enabled}");
-                                    }
-                                }
-                                break;
+                            
 
-                            case "SET_PRIORITY_THRESHOLD":
-                                if (parts.Length > 1)
-                                {
-                                    if (int.TryParse(parts[1], out int threshold))
-                                    {
-                                        await chatManager.SendPrioritySettingToServer("THRESHOLD", threshold.ToString());
-                                        Console.WriteLine($"Priority threshold set to: {threshold}");
-                                    }
-                                }
-                                break;
+                            
 
-                            case "SET_NON_PRIORITY_VOLUME":
-                                if (parts.Length > 1)
-                                {
-                                    if (float.TryParse(parts[1], out float volume))
-                                    {
-                                        await chatManager.SendPrioritySettingToServer("NON_PRIORITY_VOLUME", volume.ToString());
-                                        Console.WriteLine($"Non-priority volume set to: {volume}");
-                                    }
-                                }
-                                break;
+                            
 
-                            case "ADD_MANUAL_PRIORITY":
-                                if (parts.Length > 1)
-                                {
-                                    if (int.TryParse(parts[1], out int accountId))
-                                    {
-                                        await chatManager.SendPrioritySettingToServer("ADD_MANUAL", accountId.ToString());
-                                        Console.WriteLine($"Added manual priority for account: {accountId}");
-                                    }
-                                }
-                                break;
-
-                            case "REMOVE_MANUAL_PRIORITY":
-                                if (parts.Length > 1)
-                                {
-                                    if (int.TryParse(parts[1], out int accountId))
-                                    {
-                                        await chatManager.SendPrioritySettingToServer("REMOVE_MANUAL", accountId.ToString());
-                                        Console.WriteLine($"Removed manual priority for account: {accountId}");
-                                    }
-                                }
-                                break;
+                            
                             case "SELECT_MIC":
                                 if (parts.Length > 1)
                                 {
