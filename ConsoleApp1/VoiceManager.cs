@@ -32,6 +32,10 @@ namespace ConsoleApp1
         private readonly CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
         private WaveFormatConversionProvider resampleProvider;
 
+        private string storedServerIP;
+        private string storedPlayerID;
+        private string storedVoiceID;
+        private ProximityChatManager chatManagerRef;
         // Audio output components
         private WaveOutEvent waveOut;
         private BufferedWaveProvider waveProvider;
@@ -232,6 +236,46 @@ public bool StartVoiceReceiver(int localPort = 2051)
         Console.Error.WriteLine($"❌ Stack Trace: {ex.StackTrace}");
     }
 }
+public void SetChatManagerReference(ProximityChatManager chatManager)
+{
+    chatManagerRef = chatManager;
+}
+public void StoreConnectionDetails(string serverIP, string playerID, string voiceID)
+{
+    storedServerIP = serverIP;
+    storedPlayerID = playerID;
+    storedVoiceID = voiceID;
+}
+private void NotifyVoiceReconnect()
+{
+    try
+    {
+        if (chatManagerRef != null && !string.IsNullOrEmpty(storedServerIP))
+        {
+            _ = chatManagerRef.ConnectToServer(storedServerIP, 2051, storedPlayerID, storedVoiceID);
+            Console.WriteLine("VoiceManager: Notified chat manager to reconnect");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error notifying voice reconnect: {ex.Message}");
+    }
+}
+private void NotifyVoiceDisconnect()
+{
+    try
+    {
+        if (chatManagerRef != null)
+        {
+            chatManagerRef.DisconnectFromServer();
+            Console.WriteLine("VoiceManager: Notified chat manager to disconnect");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error notifying voice disconnect: {ex.Message}");
+    }
+}
 private byte[] ResampleAudioIfNeeded(byte[] inputAudioData)
 {
     try
@@ -367,18 +411,71 @@ private byte[] ResampleAudioIfNeeded(byte[] inputAudioData)
         {
             try
             {
+                float clampedVolume = Math.Max(0f, Math.Min(1f, volume));
+        
                 if (waveOut != null)
                 {
-                    waveOut.Volume = Math.Max(0f, Math.Min(1f, volume));
-                    Console.WriteLine($"VoiceManager: Set incoming volume to {volume:F2}");
+                    waveOut.Volume = clampedVolume;
                 }
+        
+                // NEW: Complete disconnect when volume is 0
+                if (clampedVolume <= 0f)
+                {
+                    Console.WriteLine("VoiceManager: Volume set to 0 - disconnecting from voice system");
+                    DisconnectFromVoiceSystem();
+                }
+                else if (clampedVolume > 0f && !IsVoiceReceiverActive)
+                {
+                    Console.WriteLine("VoiceManager: Volume restored - reconnecting to voice system");
+                    ReconnectToVoiceSystem();
+                }
+        
+                Console.WriteLine($"VoiceManager: Set incoming volume to {clampedVolume:F2}");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error setting incoming volume: {ex.Message}");
             }
         }
-
+        private void DisconnectFromVoiceSystem()
+        {
+            try
+            {
+                // Stop processing voice entirely
+                StopVoiceReceiver();
+        
+                // Notify the chat manager to disconnect this client from voice server
+                NotifyVoiceDisconnect();
+        
+                Console.WriteLine("VoiceManager: Completely disconnected from voice system");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error disconnecting from voice system: {ex.Message}");
+            }
+        }
+        private void ReconnectToVoiceSystem()
+        {
+            try
+            {
+                // Restart voice receiver
+                if (StartVoiceReceiver())
+                {
+                    // Notify the chat manager to reconnect to voice server
+                    NotifyVoiceReconnect();
+            
+                    Console.WriteLine("VoiceManager: Successfully reconnected to voice system");
+                }
+                else
+                {
+                    Console.WriteLine("VoiceManager: Failed to reconnect to voice system");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error reconnecting to voice system: {ex.Message}");
+            }
+        }
         public float GetIncomingVolume()
         {
             try

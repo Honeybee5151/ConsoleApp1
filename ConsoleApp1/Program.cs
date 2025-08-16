@@ -134,45 +134,67 @@ namespace ConsoleApp1
         // REPLACE this in your NetworkWorker() method (around line 119):
 
     
-        private async Task NetworkWorker()
+       
+       private async Task NetworkWorker()
+{
+    while (!networkCancellation.Token.IsCancellationRequested)
+    {
+        try
         {
-            while (!networkCancellation.Token.IsCancellationRequested)
+            // CHECK CONNECTION HEALTH periodically
+            var now = DateTime.Now;
+            if ((now - lastConnectionCheck).TotalSeconds >= 30) // Check every 30 seconds
             {
-                try
+                if (!IsConnectionHealthy())
                 {
-                    // SEND ONLY ONE AUDIO CHUNK AT A TIME
-                    if (outgoingAudioData.TryDequeue(out var audioData) && isConnectedToServer)
-                    {
-                        var chatMessage = new ChatMessage
-                        {
-                            PlayerId = serverId,
-                            PlayerName = "LocalPlayer",
-                            AudioData = audioData,
-                            Volume = smoothedLevel,
-                            Timestamp = DateTime.Now  // UNIQUE timestamp for each chunk
-                        };
-
-                        var json = JsonSerializer.Serialize(chatMessage);
-                        var message = $"VOICE_DATA:{json}";
-                        var messageBytes = Encoding.UTF8.GetBytes(message);
-
-                        var lengthBytes = BitConverter.GetBytes(messageBytes.Length);
-                
-                        await serverStream.WriteAsync(lengthBytes, 0, 4);
-                        await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
-                
-                        Console.Error.WriteLine($"DEBUG: Sent single audio chunk, {audioData.Length} bytes");
-                    }
-
-                    await Task.Delay(10, networkCancellation.Token);
+                    Console.WriteLine("Connection unhealthy - attempting reconnection");
+                    await AttemptReconnection(serverId, storedVoiceId);
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"ERROR in NetworkWorker: {ex.Message}");
-                    await Task.Delay(100, networkCancellation.Token);
-                }
+                lastConnectionCheck = now;
             }
+
+            // SEND ONLY ONE AUDIO CHUNK AT A TIME
+            if (outgoingAudioData.TryDequeue(out var audioData) && isConnectedToServer)
+            {
+                var chatMessage = new ChatMessage
+                {
+                    PlayerId = serverId,
+                    PlayerName = "LocalPlayer",
+                    AudioData = audioData,
+                    Volume = smoothedLevel,
+                    Timestamp = DateTime.Now
+                };
+
+                var json = JsonSerializer.Serialize(chatMessage);
+                var message = $"VOICE_DATA:{json}";
+                var messageBytes = Encoding.UTF8.GetBytes(message);
+
+                var lengthBytes = BitConverter.GetBytes(messageBytes.Length);
+        
+                await serverStream.WriteAsync(lengthBytes, 0, 4);
+                await serverStream.WriteAsync(messageBytes, 0, messageBytes.Length);
+        
+                Console.Error.WriteLine($"DEBUG: Sent single audio chunk, {audioData.Length} bytes");
+            }
+
+            await Task.Delay(10, networkCancellation.Token);
         }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ERROR in NetworkWorker: {ex.Message}");
+            
+            // TRIGGER RECONNECTION on network errors
+            isConnectedToServer = false;
+            if (!string.IsNullOrEmpty(storedServerAddress))
+            {
+                Console.WriteLine("Network error detected - triggering reconnection");
+                await AttemptReconnection(serverId, storedVoiceId);
+            }
+            
+            await Task.Delay(100, networkCancellation.Token);
+        }
+    }
+}
 
         #endregion
 
@@ -676,7 +698,7 @@ namespace ConsoleApp1
             }
         }
 
-     private async Task ListenForServerMessages()
+    private async Task ListenForServerMessages()
 {
     while (isConnectedToServer && serverConnection?.Connected == true)
     {
@@ -689,7 +711,15 @@ namespace ConsoleApp1
             while (lengthBytesRead < 4)
             {
                 int bytesRead = await serverStream.ReadAsync(lengthBuffer, lengthBytesRead, 4 - lengthBytesRead);
-                if (bytesRead == 0) break;
+                if (bytesRead == 0) 
+                {
+                    Console.WriteLine("Server disconnected - no more data");
+                    isConnectedToServer = false;
+                    
+                    // TRIGGER RECONNECTION
+                    await AttemptReconnection(serverId, storedVoiceId);
+                    break;
+                }
                 lengthBytesRead += bytesRead;
             }
             
@@ -698,7 +728,7 @@ namespace ConsoleApp1
             // Parse message length
             int messageLength = BitConverter.ToInt32(lengthBuffer, 0);
             
-            if (messageLength > 200000 || messageLength < 0) // 200KB safety limit
+            if (messageLength > 200000 || messageLength < 0)
             {
                 Console.WriteLine($"Invalid message length: {messageLength}");
                 break;
@@ -711,7 +741,13 @@ namespace ConsoleApp1
             while (messageBytesRead < messageLength)
             {
                 int bytesRead = await serverStream.ReadAsync(messageBuffer, messageBytesRead, messageLength - messageBytesRead);
-                if (bytesRead == 0) break;
+                if (bytesRead == 0) 
+                {
+                    Console.WriteLine("Connection lost while reading message");
+                    isConnectedToServer = false;
+                    await AttemptReconnection(serverId, storedVoiceId);
+                    break;
+                }
                 messageBytesRead += bytesRead;
             }
             
@@ -729,8 +765,26 @@ namespace ConsoleApp1
         catch (Exception ex)
         {
             Console.WriteLine($"Error in ListenForServerMessages: {ex.Message}");
+            isConnectedToServer = false;
+            
+            // TRIGGER RECONNECTION
+            await AttemptReconnection(serverId, storedVoiceId);
             break;
         }
+    }
+}
+public void OnConnectionLost()
+{
+    Console.WriteLine("Connection lost event triggered");
+    isConnectedToServer = false;
+    
+    // Clear any pending audio to prevent buildup
+    while (outgoingAudioData.TryDequeue(out _)) { }
+    
+    // Trigger reconnection attempt
+    if (!string.IsNullOrEmpty(storedServerAddress))
+    {
+        _ = Task.Run(async () => await AttemptReconnection(serverId, storedVoiceId));
     }
 }
         #endregion
@@ -915,12 +969,26 @@ namespace ConsoleApp1
         static async Task Main(string[] args)
         {
             var chatManager = new ProximityChatManager();
-
-            // ADD: Create VoiceManager for receiving audio
             var actionScriptBridge = new ActionScriptBridge();
             var voiceManager = new VoiceManager(actionScriptBridge);
-            
+    
+            // Link the managers
             chatManager.SetVoiceManager(voiceManager);
+            voiceManager.SetChatManagerReference(chatManager); // NEW LINE
+    
+            // Start voice receiver
+            if (voiceManager.StartVoiceReceiver())
+            {
+                Console.WriteLine("VoiceManager started successfully on port 2051");
+            }
+            else
+            {
+                Console.WriteLine("ERROR: VoiceManager FAILED to start on port 2051");
+                return;
+            }
+            
+            
+            
 
             // ADD: Start voice receiver immediately
             if (voiceManager.StartVoiceReceiver())
@@ -996,10 +1064,12 @@ namespace ConsoleApp1
                                     string voiceID = parts[3];
                                     Console.WriteLine($"DEBUG: Connecting voice for player {playerID}");
 
+                                    // Store connection details in VoiceManager
+                                    voiceManager.StoreConnectionDetails(serverIP, playerID, voiceID); // NEW LINE
+
                                     // Connect ProximityChatManager (for sending voice)
                                     _ = chatManager.ConnectToServer(serverIP, 2051, playerID, voiceID);
                                 }
-
                                 break;
 
                             case "STOP_MIC":
@@ -1014,6 +1084,7 @@ namespace ConsoleApp1
                                 chatManager.SetAudioTransmission(false);
                                 break;
                             case "SET_INCOMING_VOLUME":
+                                
                                 if (parts.Length > 1)
                                 {
                                     if (float.TryParse(parts[1], out float volume))
@@ -1026,6 +1097,10 @@ namespace ConsoleApp1
                                         Console.WriteLine($"Invalid volume value: {parts[1]}");
                                     }
                                 }
+                                break;
+                            case "RECONNECT":
+                                Console.WriteLine("Manual reconnection triggered");
+                                chatManager.OnConnectionLost();
                                 break;
                             case "AUDIO_PROBE":
                                 // Get default audio device info
