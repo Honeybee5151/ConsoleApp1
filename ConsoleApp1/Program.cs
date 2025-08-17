@@ -12,6 +12,9 @@ using System.Threading;
 using System.Collections.Concurrent;
 using NAudio.Lame;
 using System.IO;
+using Concentus.Structs;
+using Concentus.Structs;
+using Concentus.Enums;
 
 namespace ConsoleApp1
 {
@@ -33,6 +36,115 @@ namespace ConsoleApp1
         public DateTime Timestamp { get; set; }
     }
 
+    
+
+public class OpusAudioProcessor
+{
+    // REQUIRED: Field declarations at class level
+    private OpusEncoder encoder;
+    private OpusDecoder decoder;
+    private const int SAMPLE_RATE = 48000; // Opus works best at 48kHz
+    private const int CHANNELS = 1;
+    private const int FRAME_SIZE = 960; // 20ms at 48kHz
+
+    public OpusAudioProcessor()
+    {
+        try
+        {
+            encoder = new OpusEncoder(SAMPLE_RATE, CHANNELS, OpusApplication.OPUS_APPLICATION_VOIP);
+            decoder = new OpusDecoder(SAMPLE_RATE, CHANNELS);
+
+            // Only set properties that actually exist
+            encoder.Bitrate = 24000;
+            encoder.Complexity = 5;
+        
+            Console.WriteLine("OpusAudioProcessor initialized successfully");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to initialize Opus: {ex.Message}");
+            encoder = null;
+            decoder = null;
+        }
+    }
+    public byte[] EncodeToOpus(byte[] rawPcmData)
+    {
+        if (encoder == null)
+        {
+            Console.WriteLine("Opus encoder not available, returning raw PCM");
+            return rawPcmData;
+        }
+
+        try
+        {
+            // Convert byte array to short array (16-bit PCM)
+            short[] pcmSamples = new short[rawPcmData.Length / 2];
+            Buffer.BlockCopy(rawPcmData, 0, pcmSamples, 0, rawPcmData.Length);
+
+            // Opus output buffer
+            byte[] opusOutput = new byte[4000]; // Max Opus packet size
+
+            // CORRECTED: Use proper Encode method signature
+            int encodedBytes = encoder.Encode(pcmSamples, 0, pcmSamples.Length, opusOutput, 0, opusOutput.Length);
+
+            if (encodedBytes < 0)
+            {
+                Console.WriteLine($"Opus encoding failed with error code: {encodedBytes}");
+                return rawPcmData;
+            }
+
+            // Return only the used bytes
+            byte[] result = new byte[encodedBytes];
+            Array.Copy(opusOutput, 0, result, 0, encodedBytes);
+
+            Console.WriteLine($"Opus: Encoded {rawPcmData.Length} PCM bytes → {encodedBytes} Opus bytes");
+            return result;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Opus encoding error: {ex.Message}");
+            return rawPcmData; // Fallback to raw PCM
+        }
+    }
+
+    public byte[] DecodeFromOpus(byte[] opusData)
+    {
+        if (decoder == null)
+        {
+            Console.WriteLine("Opus decoder not available, returning original data");
+            return opusData;
+        }
+
+        try
+        {
+            // Decode buffer (enough for 20ms at 48kHz)
+            short[] pcmOutput = new short[FRAME_SIZE * CHANNELS];
+
+            // CORRECTED: Use proper Decode method signature
+            int decodedSamples = decoder.Decode(opusData, 0, opusData.Length, pcmOutput, 0, pcmOutput.Length, false);
+
+            if (decodedSamples < 0)
+            {
+                Console.WriteLine($"Opus decoding failed with error code: {decodedSamples}");
+                return new byte[0];
+            }
+
+            // Convert short array back to byte array
+            byte[] result = new byte[decodedSamples * 2]; // 2 bytes per sample
+            Buffer.BlockCopy(pcmOutput, 0, result, 0, result.Length);
+
+            Console.WriteLine($"Opus: Decoded {opusData.Length} Opus bytes → {result.Length} PCM bytes");
+            return result;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Opus decoding error: {ex.Message}");
+            return new byte[0]; // Return empty on error
+        }
+    }
+
+    
+}
     public class ChatMessage
     {
         public string PlayerId { get; set; }
@@ -51,7 +163,7 @@ namespace ConsoleApp1
         private MMDeviceEnumerator deviceEnumerator;
         private MMDevice selectedDevice;
         private List<MicrophoneInfo> availableMicrophones;
-        
+        private OpusAudioProcessor opusProcessor;
         private VoiceManager voiceManager;
         private DateTime lastAudioSent = DateTime.MinValue;
         private const int AUDIO_SEND_INTERVAL_MS = 100;
@@ -92,12 +204,7 @@ namespace ConsoleApp1
 
         public bool allowAudioTransmission = true;
 
-        public float MicrophoneGain { get; set; } = 3f;
-        public float MakeupGain { get; set; } = 1.0f; // NO boost at all
-        public float CompressorThreshold { get; set; } = 0.9f; // Very high threshold  
-        public float CompressorRatio { get; set; } = 1.5f; // Very gentle compression
-
-        public float LimiterThreshold { get; set; } = 0.8f;
+       
 
         // REMOVED: Most events to reduce overhead
         public event EventHandler<string> ConnectionStatusChanged;
@@ -118,7 +225,7 @@ namespace ConsoleApp1
             deviceEnumerator = new MMDeviceEnumerator();
             availableMicrophones = new List<MicrophoneInfo>();
             actionScriptBridge = new ActionScriptBridge();
-
+            opusProcessor = new OpusAudioProcessor();
             currentLevel = 0f;
             peakLevel = 0f;
             smoothedLevel = 0f;
@@ -359,37 +466,9 @@ namespace ConsoleApp1
             }
         }
 
-        private float ApplyCompressor(float input)
-        {
-            float absInput = Math.Abs(input);
+       
 
-            if (absInput <= CompressorThreshold)
-            {
-                // Below threshold: no compression
-                return input;
-            }
-            else
-            {
-                // Above threshold: apply compression
-                float excessLevel = absInput - CompressorThreshold;
-                float compressedExcess = excessLevel / CompressorRatio;
-                float compressedLevel = CompressorThreshold + compressedExcess;
-
-                // Maintain original sign
-                return input >= 0 ? compressedLevel : -compressedLevel;
-            }
-        }
-
-        private float ApplyLimiter(float input)
-        {
-            // Hard limit - never allow audio above the limiter threshold
-            if (input > LimiterThreshold)
-                return LimiterThreshold;
-            else if (input < -LimiterThreshold)
-                return -LimiterThreshold;
-            else
-                return input;
-        }
+        
 
         // ULTRA-OPTIMIZED: Absolute minimal processing
         private void OnAudioDataAvailable(object sender, WaveInEventArgs e)
@@ -445,15 +524,42 @@ namespace ConsoleApp1
         }
         private byte[] EncodeAudioForServer(byte[] rawAudio)
         {
-            if (serverCodec == "Opus")
+            if (serverCodec == "Opus" && opusProcessor != null)
             {
-                // TODO: Encode to Opus when library is added
-                Console.WriteLine("Would encode to Opus here");
-                return rawAudio; // Return raw for now
+                // Convert 44.1kHz → 48kHz before Opus encoding
+                byte[] resampledAudio = ResampleForOpus(rawAudio);
+                return opusProcessor.EncodeToOpus(resampledAudio);
             }
             else
             {
-                return rawAudio; // Raw PCM, no encoding needed
+                // Send raw 44.1kHz PCM as-is
+                return rawAudio;
+            }
+        }
+        private byte[] ResampleForOpus(byte[] audio44k)
+        {
+            try
+            {
+                WaveFormat inputFormat = new WaveFormat(44100, 16, 1);  // Source
+                WaveFormat outputFormat = new WaveFormat(48000, 16, 1); // Opus target
+        
+                using (var inputStream = new MemoryStream(audio44k))
+                {
+                    var rawSource = new RawSourceWaveStream(inputStream, inputFormat);
+                    var resampler = new WaveFormatConversionProvider(outputFormat, rawSource);
+            
+                    var outputBuffer = new byte[audio44k.Length * 48000 / 44100 + 1000];
+                    int bytesRead = resampler.Read(outputBuffer, 0, outputBuffer.Length);
+            
+                    byte[] result = new byte[bytesRead];
+                    Array.Copy(outputBuffer, result, bytesRead);
+                    return result;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Resampling failed: {ex.Message}");
+                return audio44k; // Fallback
             }
         }
         public async Task SendServerMessage(string message)
@@ -797,7 +903,12 @@ namespace ConsoleApp1
             string message = Encoding.UTF8.GetString(messageBuffer, 0, messageLength);
             
             // Route voice messages to VoiceManager
-            if (message.Contains("\"Type\":\"VOICE_AUDIO\""))
+            if (message.Contains("\"Type\":\"VOICE_CONFIG\""))
+            {
+                Console.WriteLine($"Routing VOICE_CONFIG message to VoiceManager");
+                await voiceManager.ProcessVoiceTcpMessage(message);
+            }
+            else if (message.Contains("\"Type\":\"VOICE_AUDIO\""))
             {
                 Console.WriteLine($"Routing complete TCP message ({messageLength} bytes) to VoiceManager");
                 await voiceManager.ProcessVoiceTcpMessage(message);
@@ -989,18 +1100,6 @@ public void OnConnectionLost()
             voiceManager.SetChatManagerReference(chatManager); // NEW LINE
     
             // Start voice receiver
-            if (voiceManager.StartVoiceReceiver())
-            {
-                Console.WriteLine("VoiceManager started successfully on port 2051");
-            }
-            else
-            {
-                Console.WriteLine("ERROR: VoiceManager FAILED to start on port 2051");
-                return;
-            }
-            
-            
-            
 
             // ADD: Start voice receiver immediately
             if (voiceManager.StartVoiceReceiver())

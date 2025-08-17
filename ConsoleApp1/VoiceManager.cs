@@ -31,6 +31,7 @@ namespace ConsoleApp1
     public class VoiceManager : IDisposable
     {
         #region Fields
+        private OpusAudioProcessor opusProcessor;
         
         // REMOVED: UDP components - no longer needed
         // private UdpClient voiceReceiveClient;
@@ -52,7 +53,7 @@ namespace ConsoleApp1
         private readonly ActionScriptBridge actionScriptBridge;
         
         // TCP voice connection reference (you'll need to pass this in)
-        private TcpClient voiceTcpConnection;
+        
         
         // CHANGED: These properties are now for compatibility but not actively used
         public int VoiceReceivePort { get; private set; } = 2051; 
@@ -67,6 +68,7 @@ namespace ConsoleApp1
         public VoiceManager(ActionScriptBridge bridge)
         {
             actionScriptBridge = bridge;
+            opusProcessor = new OpusAudioProcessor();
         }
 
         #endregion
@@ -147,12 +149,23 @@ public bool StartVoiceReceiver(int localPort = 2051)
         return false;
     }
 }
+private byte[] DecodeAudioIfNeeded(byte[] audioData, string codec)
+{
+    if (codec == "Opus" && opusProcessor != null)
+    {
+        return opusProcessor.DecodeFromOpus(audioData);
+    }
+    else
+    {
+        return audioData; // Already raw PCM
+    }
+}
+
 private void HandleVoiceConfig(VoiceConfigMessage config)
 {
     Console.WriteLine($"Received voice config: Codec={config.Codec}, SampleRate={config.SampleRate}");
     currentCodec = config.Codec;
     
-    // Notify ProximityChatManager about codec choice
     if (chatManagerRef != null)
     {
         chatManagerRef.SetServerCodec(config.Codec);
@@ -160,21 +173,15 @@ private void HandleVoiceConfig(VoiceConfigMessage config)
     
     if (config.Codec == "Opus")
     {
-        Console.WriteLine("Server requests Opus codec - need to implement Opus support");
-        // TODO: Initialize Opus decoder when you add Opus library
+        Console.WriteLine("Server configured for Opus codec - using compression");
     }
     else
     {
-        Console.WriteLine("Using Raw PCM codec");
+        Console.WriteLine("Server configured for Raw PCM codec - no compression");
     }
 }
         // NEW: Set the TCP connection for voice
-        public void SetVoiceTcpConnection(TcpClient tcpConnection)
-        {
-            voiceTcpConnection = tcpConnection;
-            Console.WriteLine("Voice TCP connection set");
-        }
-
+       
         public void StopVoiceReceiver()
         {
             try
@@ -193,7 +200,7 @@ private void HandleVoiceConfig(VoiceConfigMessage config)
                 resampleProvider?.Dispose();
                 resampleProvider = null;
         
-                voiceTcpConnection = null;
+                
         
                 Console.Error.WriteLine("[VOICE_CLEANUP] Voice receiver stopped");
             }
@@ -372,24 +379,22 @@ private byte[] ResampleAudioIfNeeded(byte[] inputAudioData)
         {
             try
             {
-                Console.Error.WriteLine($"🔊 INCOMING: Processing {voiceData.Length} bytes from {speakerId}");
+                // 1. DECODE first (Opus → PCM if needed)
+                byte[] decodedAudio = DecodeAudioIfNeeded(voiceData, currentCodec);
         
-                // Skip processing if local volume is 0
+                // 2. RESAMPLE second (match sample rates)
+                byte[] finalAudioData = ResampleAudioIfNeeded(decodedAudio);
+        
+                Console.Error.WriteLine($"🔊 INCOMING: Processing {voiceData.Length} bytes from {speakerId}");
+
                 if (waveOut?.Volume <= 0f)
                 {
                     Console.Error.WriteLine("🔊 SKIPPING: Audio is muted");
                     return;
                 }
 
-                if (waveProvider != null && voiceData.Length > 0)
+                if (waveProvider != null && finalAudioData.Length > 0)
                 {
-                    Console.Error.WriteLine($"🔊 BUFFER: {waveProvider.BufferedBytes}/{waveProvider.BufferLength} before adding {voiceData.Length} bytes");
-            
-                    // CRITICAL: Resample the audio if needed
-                    byte[] finalAudioData = ResampleAudioIfNeeded(voiceData);
-            
-                    Console.Error.WriteLine($"🔊 RESAMPLE: Input {voiceData.Length} bytes → Output {finalAudioData.Length} bytes");
-            
                     // Check buffer space
                     int availableSpace = waveProvider.BufferLength - waveProvider.BufferedBytes;
                     if (availableSpace < finalAudioData.Length)
@@ -397,32 +402,18 @@ private byte[] ResampleAudioIfNeeded(byte[] inputAudioData)
                         Console.Error.WriteLine("🔊 WARNING: Buffer full, clearing...");
                         waveProvider.ClearBuffer();
                     }
-            
-                    // Add the resampled audio
+
                     waveProvider.AddSamples(finalAudioData, 0, finalAudioData.Length);
-            
-                    Console.Error.WriteLine($"🔊 SUCCESS: Added {finalAudioData.Length} bytes to audio buffer (volume: {serverVolume:F2})");
-                    Console.Error.WriteLine($"🔊 BUFFER_AFTER: {waveProvider.BufferedBytes}/{waveProvider.BufferLength}");
-                }
-                else
-                {
-                    Console.Error.WriteLine("🔊 ERROR: waveProvider is null or no audio data");
+                    Console.Error.WriteLine($"🔊 SUCCESS: Added {finalAudioData.Length} bytes to audio buffer");
                 }
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"🔊 ERROR: {ex.Message}");
-                Console.Error.WriteLine($"🔊 STACK: {ex.StackTrace}");
             }
         }
 
-        // LEGACY: Keep old UDP method for backward compatibility but mark as unused
-        [Obsolete("UDP voice reception is no longer used. Voice is now handled via TCP.")]
-        private async Task ListenForIncomingVoice()
-        {
-            // This method is no longer used but kept for compatibility
-            Console.WriteLine("UDP voice listening is deprecated - using TCP voice instead");
-        }
+      
 
         #endregion
 
