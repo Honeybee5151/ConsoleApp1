@@ -19,6 +19,14 @@ namespace ConsoleApp1
         public DateTime Timestamp { get; set; }
         public string SpeakerId { get; set; }
     }
+    public class VoiceConfigMessage
+    {
+        public string Type { get; set; }
+        public string Codec { get; set; }
+        public int SampleRate { get; set; }
+        public int Bitrate { get; set; }
+        public bool EnableVolumeAttenuation { get; set; }
+    }
 
     public class VoiceManager : IDisposable
     {
@@ -49,6 +57,8 @@ namespace ConsoleApp1
         // CHANGED: These properties are now for compatibility but not actively used
         public int VoiceReceivePort { get; private set; } = 2051; 
         public bool IsVoiceReceiverActive { get; private set; } = false;
+        
+        private string currentCodec = "Raw";
         
         #endregion
 
@@ -137,6 +147,27 @@ public bool StartVoiceReceiver(int localPort = 2051)
         return false;
     }
 }
+private void HandleVoiceConfig(VoiceConfigMessage config)
+{
+    Console.WriteLine($"Received voice config: Codec={config.Codec}, SampleRate={config.SampleRate}");
+    currentCodec = config.Codec;
+    
+    // Notify ProximityChatManager about codec choice
+    if (chatManagerRef != null)
+    {
+        chatManagerRef.SetServerCodec(config.Codec);
+    }
+    
+    if (config.Codec == "Opus")
+    {
+        Console.WriteLine("Server requests Opus codec - need to implement Opus support");
+        // TODO: Initialize Opus decoder when you add Opus library
+    }
+    else
+    {
+        Console.WriteLine("Using Raw PCM codec");
+    }
+}
         // NEW: Set the TCP connection for voice
         public void SetVoiceTcpConnection(TcpClient tcpConnection)
         {
@@ -175,65 +206,74 @@ public bool StartVoiceReceiver(int localPort = 2051)
         // NEW: Process TCP voice messages
       public async Task ProcessVoiceTcpMessage(string jsonMessage)
 {
-    Console.Error.WriteLine($"🎵 DEBUG: ProcessVoiceTcpMessage called");
-    Console.Error.WriteLine($"🎵 DEBUG: Message length: {jsonMessage?.Length ?? 0}");
-    Console.Error.WriteLine($"🎵 DEBUG: isProcessingVoice: {isProcessingVoice}");
+    Console.Error.WriteLine($"DEBUG: ProcessVoiceTcpMessage called");
+    Console.Error.WriteLine($"DEBUG: Message length: {jsonMessage?.Length ?? 0}");
+    Console.Error.WriteLine($"DEBUG: isProcessingVoice: {isProcessingVoice}");
     
     if (jsonMessage != null && jsonMessage.Length > 0)
     {
-        Console.Error.WriteLine($"🎵 DEBUG: First 100 chars: {jsonMessage.Substring(0, Math.Min(100, jsonMessage.Length))}");
+        Console.Error.WriteLine($"DEBUG: First 100 chars: {jsonMessage.Substring(0, Math.Min(100, jsonMessage.Length))}");
     }
     
     if (!isProcessingVoice)
     {
-        Console.Error.WriteLine("❌ DEBUG: Not processing voice - system not active");
+        Console.Error.WriteLine("DEBUG: Not processing voice - system not active");
         return;
     }
 
     try
     {
-        Console.Error.WriteLine("🎵 DEBUG: About to deserialize JSON...");
+        Console.Error.WriteLine("DEBUG: About to deserialize JSON...");
         
-        // Parse the JSON message directly (no prefix)
+        // First check if this is a VOICE_CONFIG message
+        if (jsonMessage.Contains("\"Type\":\"VOICE_CONFIG\""))
+        {
+            Console.Error.WriteLine("DEBUG: Processing VOICE_CONFIG message");
+            var configMessage = JsonSerializer.Deserialize<VoiceConfigMessage>(jsonMessage);
+            HandleVoiceConfig(configMessage);
+            return;
+        }
+        
+        // Then handle VOICE_AUDIO messages (existing code)
         var audioMessage = JsonSerializer.Deserialize<AudioMessage>(jsonMessage);
         
-        Console.Error.WriteLine($"🎵 DEBUG: Deserialization complete. Type: {audioMessage?.Type}");
+        Console.Error.WriteLine($"DEBUG: Deserialization complete. Type: {audioMessage?.Type}");
         
         if (audioMessage?.Type == "VOICE_AUDIO")
         {
-            Console.Error.WriteLine($"🎵 DEBUG: Valid VOICE_AUDIO message from {audioMessage.SpeakerId}");
-            Console.Error.WriteLine($"🎵 DEBUG: Volume: {audioMessage.Volume}, AudioData length: {audioMessage.AudioData?.Length ?? 0}");
+            Console.Error.WriteLine($"DEBUG: Valid VOICE_AUDIO message from {audioMessage.SpeakerId}");
+            Console.Error.WriteLine($"DEBUG: Volume: {audioMessage.Volume}, AudioData length: {audioMessage.AudioData?.Length ?? 0}");
             
             // Decode the Base64 audio data
-            Console.Error.WriteLine("🎵 DEBUG: About to decode Base64...");
+            Console.Error.WriteLine("DEBUG: About to decode Base64...");
             byte[] audioData = Convert.FromBase64String(audioMessage.AudioData);
-            Console.Error.WriteLine($"🎵 DEBUG: Decoded {audioData.Length} bytes of audio data");
+            Console.Error.WriteLine($"DEBUG: Decoded {audioData.Length} bytes of audio data");
             
             // Process the audio with the specified volume
-            Console.Error.WriteLine("🎵 DEBUG: About to process incoming voice...");
+            Console.Error.WriteLine("DEBUG: About to process incoming voice...");
             await ProcessIncomingVoice(audioData, audioMessage.Volume, audioMessage.SpeakerId);
             
-            Console.Error.WriteLine($"✅ Processed TCP voice from player {audioMessage.SpeakerId}, {audioData.Length} bytes, volume: {audioMessage.Volume:F2}");
+            Console.Error.WriteLine($"Processed TCP voice from player {audioMessage.SpeakerId}, {audioData.Length} bytes, volume: {audioMessage.Volume:F2}");
         }
         else
         {
-            Console.Error.WriteLine($"❌ DEBUG: Wrong message type: '{audioMessage?.Type}', expected 'VOICE_AUDIO'");
+            Console.Error.WriteLine($"DEBUG: Wrong message type: '{audioMessage?.Type}', expected 'VOICE_AUDIO'");
         }
     }
     catch (JsonException jsonEx)
     {
-        Console.Error.WriteLine($"❌ JSON Error: {jsonEx.Message}");
-        Console.Error.WriteLine($"❌ JSON Error Details: {jsonEx}");
+        Console.Error.WriteLine($"JSON Error: {jsonEx.Message}");
+        Console.Error.WriteLine($"JSON Error Details: {jsonEx}");
     }
     catch (FormatException formatEx)
     {
-        Console.Error.WriteLine($"❌ Base64 Format Error: {formatEx.Message}");
+        Console.Error.WriteLine($"Base64 Format Error: {formatEx.Message}");
     }
     catch (Exception ex)
     {
-        Console.Error.WriteLine($"❌ General Error: {ex.Message}");
-        Console.Error.WriteLine($"❌ Exception Type: {ex.GetType().Name}");
-        Console.Error.WriteLine($"❌ Stack Trace: {ex.StackTrace}");
+        Console.Error.WriteLine($"General Error: {ex.Message}");
+        Console.Error.WriteLine($"Exception Type: {ex.GetType().Name}");
+        Console.Error.WriteLine($"Stack Trace: {ex.StackTrace}");
     }
 }
 public void SetChatManagerReference(ProximityChatManager chatManager)

@@ -107,6 +107,8 @@ namespace ConsoleApp1
         private string storedServerAddress;
         private int storedPort;
         private string storedVoiceId;
+
+        private string serverCodec = "Raw";
         #endregion
 
         #region Constructor and Initialization
@@ -240,7 +242,11 @@ namespace ConsoleApp1
                 // Minimal error handling
             }
         }
-
+        public void SetServerCodec(string codec)
+        {
+            serverCodec = codec;
+            Console.WriteLine($"ProximityChatManager: Server codec set to {codec}");
+        }
         public bool SelectMicrophone(string microphoneId, bool stopCurrent = true)
         {
             try
@@ -416,11 +422,14 @@ namespace ConsoleApp1
             {
                 byte[] audioData = new byte[e.BytesRecorded];
                 Array.Copy(e.Buffer, audioData, e.BytesRecorded);
-                outgoingAudioData.Enqueue(audioData);
         
+                // Check codec and encode if needed
+                byte[] finalAudioData = EncodeAudioForServer(audioData);
+                outgoingAudioData.Enqueue(finalAudioData);
+
                 lastAudioSent = now; // Update last send time
-        
-                Console.Error.WriteLine($"DEBUG: Queued {audioData.Length} bytes for sending (level: {level:F3})");
+
+                Console.Error.WriteLine($"DEBUG: Queued {finalAudioData.Length} bytes for sending (codec: {serverCodec}, level: {level:F3})");
             }
             else if (level > 0.005f && allowAudioTransmission)
             {
@@ -432,6 +441,19 @@ namespace ConsoleApp1
             {
                 actionScriptBridge.SendAudioLevel(smoothedLevel);
                 audioUpdateCounter = 0;
+            }
+        }
+        private byte[] EncodeAudioForServer(byte[] rawAudio)
+        {
+            if (serverCodec == "Opus")
+            {
+                // TODO: Encode to Opus when library is added
+                Console.WriteLine("Would encode to Opus here");
+                return rawAudio; // Return raw for now
+            }
+            else
+            {
+                return rawAudio; // Raw PCM, no encoding needed
             }
         }
         public async Task SendServerMessage(string message)
