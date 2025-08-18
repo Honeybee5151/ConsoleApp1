@@ -44,7 +44,7 @@ namespace ConsoleApp1
         public string Command { get; set; } = "AUTH";
     }
 
-    public class UdpPriorityCommand
+    public class UdpPriorityCommand //2
     {
         public string PlayerId { get; set; }
         public string SettingType { get; set; }
