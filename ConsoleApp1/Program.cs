@@ -1116,7 +1116,7 @@ namespace ConsoleApp1
             }
             catch (OperationCanceledException)
             {
-                Console.WriteLine("Command listener stopped");//2
+                Console.WriteLine("Command listener stopped");//22
             }
         }
     }
