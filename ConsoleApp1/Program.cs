@@ -467,9 +467,15 @@ namespace ConsoleApp1
         public void StartMicrophone()
         {
             Console.WriteLine("[MIC] Starting microphone...");
+
             if (selectedDevice == null)
             {
-                if (!SelectDefaultMicrophone(false))
+                // Try saved microphone first
+                if (!string.IsNullOrEmpty(SelectedMicrophoneId) && SelectMicrophone(SelectedMicrophoneId, false))
+                {
+                    Console.WriteLine($"[MIC] Using saved microphone: {SelectedMicrophoneId}");
+                }
+                else if (!SelectDefaultMicrophone(false)) // fallback
                 {
                     Console.WriteLine("[MIC] No microphone available");
                     return;
