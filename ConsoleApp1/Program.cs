@@ -327,6 +327,11 @@ namespace ConsoleApp1
         {
             try
             {
+                Console.WriteLine($"[UDP_AUTH_DEBUG] Starting authentication...");
+                Console.WriteLine($"[UDP_AUTH_DEBUG] PlayerID: {playerId}");
+                Console.WriteLine($"[UDP_AUTH_DEBUG] VoiceID: {voiceId}");
+                Console.WriteLine($"[UDP_AUTH_DEBUG] Server endpoint: {serverEndpoint}");
+        
                 var authRequest = new UdpAuthRequest
                 {
                     PlayerId = playerId,
@@ -335,17 +340,19 @@ namespace ConsoleApp1
                 };
 
                 string jsonData = JsonSerializer.Serialize(authRequest);
+                Console.WriteLine($"[UDP_AUTH_DEBUG] JSON: {jsonData}");
+        
                 byte[] authPacket = Encoding.UTF8.GetBytes("AUTH" + jsonData);
+                Console.WriteLine($"[UDP_AUTH_DEBUG] Packet size: {authPacket.Length} bytes");
 
                 await udpClient.SendAsync(authPacket, authPacket.Length, serverEndpoint);
-                Console.WriteLine($"[UDP_AUTH] Sent authentication for player {playerId}");
+                Console.WriteLine($"[UDP_AUTH_DEBUG] Authentication packet sent successfully!");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[UDP_AUTH] Error: {ex.Message}");
+                Console.WriteLine($"[UDP_AUTH_DEBUG] ERROR: {ex.Message}");
             }
         }
-
         public async Task SendPrioritySettingUdp(string settingType, string value)
         {
             try
@@ -407,6 +414,10 @@ namespace ConsoleApp1
                 }
 
                 actionScriptBridge.SendMicrophoneList(availableMicrophones);
+        
+                // DON'T auto-select default - let Flash handle it
+                // if (!SelectDefaultMicrophone(false)) { ... } ← Remove this
+        
             }
             catch (Exception ex)
             {
@@ -416,6 +427,8 @@ namespace ConsoleApp1
 
         public bool SelectMicrophone(string microphoneId, bool stopCurrent = true)
         {
+            Console.WriteLine($"[DEBUG] SelectMicrophone called with: {microphoneId}");
+            Console.WriteLine($"[DEBUG] Call stack: {new System.Diagnostics.StackTrace()}");
             try
             {
                 Console.WriteLine($"[MIC] Selecting microphone: {microphoneId}");
@@ -522,7 +535,7 @@ namespace ConsoleApp1
 
             audioUpdateCounter++;
 
-            // Calculate audio level
+            // Calculate audio level from raw PCM
             float maxSample = 0f;
             for (int i = 0; i < e.BytesRecorded; i += 2)
             {
@@ -537,6 +550,14 @@ namespace ConsoleApp1
             float level = maxSample * MicrophoneSensitivity;
             smoothedLevel = smoothedLevel * 0.7f + level * 0.3f;
 
+            // SEND AUDIO LEVEL TO FLASH MORE FREQUENTLY (from raw PCM)
+            if (audioUpdateCounter >= 5)
+            {
+                Console.WriteLine($"[CLIENT_DEBUG] Audio level calculated: {level:F3}, smoothed: {smoothedLevel:F3}");
+                Console.WriteLine($"[CLIENT_DEBUG] Sending to Flash: AUDIO_LEVEL:{smoothedLevel:F2}");
+                actionScriptBridge.SendAudioLevel(smoothedLevel);
+                audioUpdateCounter = 0;
+            }
             // Send audio if above noise gate and connected
             var now = DateTime.Now;
             if (isConnectedToServer && 
@@ -551,22 +572,14 @@ namespace ConsoleApp1
 
                 // Encode to Opus
                 byte[] opusData = opusProcessor.EncodeToOpus(audioData);
-                
+        
                 // Queue for UDP sending
                 outgoingOpusData.Enqueue(opusData);
                 lastAudioSent = now;
 
                 Console.WriteLine($"[OPUS] Encoded {audioData.Length} PCM → {opusData.Length} Opus bytes (level: {level:F3})");
             }
-
-            // Update UI
-            if (audioUpdateCounter >= 10) // Update UI less frequently
-            {
-                actionScriptBridge.SendAudioLevel(smoothedLevel);
-                audioUpdateCounter = 0;
-            }
         }
-
         private void ForceCleanupCurrentMicrophone()
         {
             try
@@ -830,17 +843,14 @@ namespace ConsoleApp1
         {
             try
             {
-                levelUpdateCounter++;
-
-                if (levelUpdateCounter >= 1)
-                {
-                    Console.Out.WriteLine($"AUDIO_LEVEL:{level:F2}");
-                    Console.Out.Flush();
-                    levelUpdateCounter = 0;
-                    lastSentLevel = level;
-                }
+                // Force English decimal format with dots
+                Console.WriteLine($"AUDIO_LEVEL:{level.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
+                Console.WriteLine($"[SEND_DEBUG] Sent AUDIO_LEVEL:{level:F2}");
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SEND_DEBUG] ERROR: {ex.Message}");
+            }
         }
 
         public void SendMicrophoneStatus(bool isEnabled)

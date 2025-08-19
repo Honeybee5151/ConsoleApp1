@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "XlVFnkPMx3Q=",
+  "dgSpecHash": "KjGFcADrkVY=",
   "success": true,
-  "projectFilePath": "C:\\Users\\shang\\Downloads\\ConsoleApp1-1.0.0-raw\\ConsoleApp1-1.0.0-raw\\ConsoleApp1\\ConsoleApp1.csproj",
+  "projectFilePath": "C:\\Users\\shang\\Desktop\\ProximityChat\\ConsoleApp1-1.0.0-raw\\ConsoleApp1-1.0.0-raw\\ConsoleApp1\\ConsoleApp1.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\shang\\.nuget\\packages\\concentus\\2.2.2\\concentus.2.2.2.nupkg.sha512",
     "C:\\Users\\shang\\.nuget\\packages\\microsoft.net.illink.tasks\\8.0.19\\microsoft.net.illink.tasks.8.0.19.nupkg.sha512",
