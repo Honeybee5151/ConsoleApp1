@@ -189,6 +189,7 @@ namespace ConsoleApp1
         private DateTime lastAudioSent = DateTime.MinValue;
         private const int AUDIO_SEND_INTERVAL_MS = 50; // Faster for UDP
 
+        public bool IsUIActive { get; private set; } = false;
         // Audio processing
         private volatile float currentLevel;
         private volatile float peakLevel;
@@ -556,14 +557,18 @@ namespace ConsoleApp1
             float level = maxSample * MicrophoneSensitivity;
             smoothedLevel = smoothedLevel * 0.7f + level * 0.3f;
 
-            // SEND AUDIO LEVEL TO FLASH MORE FREQUENTLY (from raw PCM)
-            if (audioUpdateCounter >= 5)
+            // ONLY SEND AUDIO LEVEL TO FLASH IF UI IS ACTIVE
+            if (IsUIActive && audioUpdateCounter >= 5)
             {
-                Console.WriteLine($"[CLIENT_DEBUG] Audio level calculated: {level:F3}, smoothed: {smoothedLevel:F3}");
-                Console.WriteLine($"[CLIENT_DEBUG] Sending to Flash: AUDIO_LEVEL:{smoothedLevel:F2}");
                 actionScriptBridge.SendAudioLevel(smoothedLevel);
                 audioUpdateCounter = 0;
             }
+            else if (!IsUIActive && audioUpdateCounter >= 5)
+            {
+                // Reset counter even when UI is inactive to prevent overflow
+                audioUpdateCounter = 0;
+            }
+
             // Send audio if above noise gate and connected
             var now = DateTime.Now;
             if (isConnectedToServer && 
@@ -578,12 +583,13 @@ namespace ConsoleApp1
 
                 // Encode to Opus
                 byte[] opusData = opusProcessor.EncodeToOpus(audioData);
-        
+
                 // Queue for UDP sending
                 outgoingOpusData.Enqueue(opusData);
                 lastAudioSent = now;
 
-                Console.WriteLine($"[OPUS] Encoded {audioData.Length} PCM → {opusData.Length} Opus bytes (level: {level:F3})");
+                // Optional: Keep this one debug line if you want to see voice transmission
+                // Console.WriteLine($"[OPUS] Encoded {audioData.Length} PCM → {opusData.Length} Opus bytes (level: {level:F3})");
             }
         }
         private void ForceCleanupCurrentMicrophone()
@@ -749,7 +755,11 @@ namespace ConsoleApp1
         {
             MicrophoneSensitivity = Math.Max(0.1f, Math.Min(5.0f, sensitivity));
         }
-
+        public void SetUIState(bool isActive)
+        {
+            IsUIActive = isActive;
+            Console.WriteLine($"[UI] UI state changed to: {(isActive ? "Active" : "Inactive")}");
+        }
         public void SetNoiseGate(float threshold)
         {
             NoiseGate = Math.Max(0.0f, Math.Min(1.0f, threshold));
@@ -845,19 +855,19 @@ namespace ConsoleApp1
             catch { }
         }
 
+        
         public void SendAudioLevel(float level)
         {
             try
             {
-                // Force English decimal format with dots
                 Console.WriteLine($"AUDIO_LEVEL:{level.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
-                Console.WriteLine($"[SEND_DEBUG] Sent AUDIO_LEVEL:{level:F2}");
             }
-            catch (Exception ex)
+            catch
             {
-                Console.WriteLine($"[SEND_DEBUG] ERROR: {ex.Message}");
+                // Silent fail - no debug output
             }
         }
+
 
         public void SendMicrophoneStatus(bool isEnabled)
         {
@@ -959,6 +969,16 @@ namespace ConsoleApp1
                             case "START_MIC":
                                 chatManager.StartMicrophone();
                                 break;
+        
+                            case "UI_ON":
+                                chatManager.SetUIState(true);
+                                Console.WriteLine("🖥️ UI activated - audio level updates enabled");
+                                break;
+
+                            case "UI_OFF":
+                                chatManager.SetUIState(false);
+                                Console.WriteLine("🖥️ UI deactivated - audio level updates disabled");
+                                break;
 
                             case "CONNECT_VOICE":
                                 if (parts.Length >= 4)
@@ -966,7 +986,7 @@ namespace ConsoleApp1
                                     string serverIP = parts[1];
                                     string playerID = parts[2];
                                     string voiceID = parts[3];
-                                    
+            
                                     Console.WriteLine($"🔌 Connecting UDP voice for player {playerID}...");
 
                                     // Store connection details in VoiceManager
@@ -977,7 +997,7 @@ namespace ConsoleApp1
 
                                     // Connect ProximityChatManager (UDP)
                                     bool connected = await chatManager.ConnectToServer(serverIP, 2051, playerID, voiceID);
-                                    
+            
                                     if (connected)
                                     {
                                         Console.WriteLine("✅ UDP voice connection established!");
